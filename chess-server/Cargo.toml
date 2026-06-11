@@ -1,0 +1,39 @@
+[package]
+name = "chess-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Web 框架
+axum = { version = "0.8", features = ["ws", "macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# 数据库
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate"] }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 认证
+jsonwebtoken = "9"
+argon2 = "0.5"
+
+# 工具
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+futures = "0.3"
+rand = "0.8"
+
+# 象棋引擎 (本地路径依赖)
+chess-engine = { path = "../chess-engine", features = ["serde"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
