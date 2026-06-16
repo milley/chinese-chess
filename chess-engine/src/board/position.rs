@@ -59,17 +59,6 @@ impl Position {
             None
         }
     }
-
-    /// 从 FEN 列字符和行号创建
-    pub fn from_fen_col(col_char: char, row: u8) -> Option<Self> {
-        let col = Self::char_to_col(col_char)?;
-        let pos = Self::new(col, row);
-        if pos.is_valid() {
-            Some(pos)
-        } else {
-            None
-        }
-    }
 }
 
 impl fmt::Display for Position {

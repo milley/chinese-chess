@@ -73,7 +73,7 @@ impl GameRoom {
     /// 执行走法
     pub async fn make_move(
         &self,
-        user_id: Uuid,
+        _user_id: Uuid,
         player_color: chess_engine::Color,
         from: &str,
         to: &str,

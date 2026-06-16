@@ -62,40 +62,26 @@ pub fn validate_move(board: &Board, m: Move, color: Color) -> Result<(), MoveErr
     let mut new_board = board.clone();
     new_board.make_move(m);
     if is_in_check(&new_board, color) {
-        // 检查是否是飞将
-        if is_flying_general(&new_board, color) {
-            return Err(MoveError::FlyingGeneral);
+        // 判断是否是飞将导致的被将 (两将同列面对面无遮挡)
+        // 飞将检测已包含在 is_in_check 中，这里只做区分：如果唯一攻击方是对方的将，则是飞将
+        let my_king = new_board.find_king(color);
+        let opp_king = new_board.find_king(color.opposite());
+        if let (Some(mk), Some(ok)) = (my_king, opp_king) {
+            if mk.col == ok.col {
+                // 检查两将之间是否无遮挡
+                let min_row = mk.row.min(ok.row);
+                let max_row = mk.row.max(ok.row);
+                let blocked = (min_row + 1..max_row)
+                    .any(|row| new_board.piece_at(crate::board::Position::new(mk.col, row)).is_some());
+                if !blocked {
+                    return Err(MoveError::FlyingGeneral);
+                }
+            }
         }
         return Err(MoveError::WouldBeInCheck);
     }
 
     Ok(())
-}
-
-/// 检查飞将规则
-fn is_flying_general(board: &Board, color: Color) -> bool {
-    let my_king = match board.find_king(color) {
-        Some(pos) => pos,
-        None => return false,
-    };
-    let opp_king = match board.find_king(color.opposite()) {
-        Some(pos) => pos,
-        None => return false,
-    };
-
-    if my_king.col != opp_king.col {
-        return false;
-    }
-
-    let min_row = my_king.row.min(opp_king.row);
-    let max_row = my_king.row.max(opp_king.row);
-    for row in (min_row + 1)..max_row {
-        if board.piece_at(crate::board::Position::new(my_king.col, row)).is_some() {
-            return false;
-        }
-    }
-
-    true
 }
 
 #[cfg(test)]

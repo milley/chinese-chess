@@ -21,7 +21,11 @@ impl Board {
     }
 
     /// 生成所有合法走法 (过滤掉导致自己被将的走法)
+    /// 使用 make_move/undo_move 替代完整 Board clone，零堆分配
     pub fn generate_legal_moves(&self, color: Color) -> Vec<Move> {
+        // We need mutable access for make_move/undo_move, so we clone once
+        // (array clone is much cheaper than HashMap clone)
+        let mut board = self.clone();
         self.generate_pseudo_legal_moves(color)
             .into_iter()
             .filter(|&m| {
@@ -31,10 +35,11 @@ impl Board {
                         return false;
                     }
                 }
-                // 执行走法后检查是否被将
-                let mut board = self.clone();
-                board.make_move(m);
-                !crate::rules::is_in_check(&board, color)
+                // 执行走法后检查是否被将，然后撤销
+                let captured = board.make_move(m);
+                let in_check = crate::rules::is_in_check(&board, color);
+                board.undo_move(m, captured);
+                !in_check
             })
             .collect()
     }

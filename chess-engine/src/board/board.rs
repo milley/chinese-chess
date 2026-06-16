@@ -1,32 +1,42 @@
-use std::collections::HashMap;
-
 use crate::pieces::{Color, Piece, PieceType, Move};
 use super::Position;
 
 /// 中国象棋初始局面 FEN
 const INITIAL_FEN: &str = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1";
 
-/// 棋盘表示
+/// 将位置索引从 (col, row) 转换为数组下标
+#[inline]
+fn pos_index(pos: Position) -> usize {
+    (pos.row as usize) * 9 + (pos.col as usize)
+}
+
+/// 棋盘表示 — 使用固定数组 (9×10 = 90 格)
 #[derive(Clone, Debug)]
 pub struct Board {
-    /// 棋子位置映射 (Position -> Piece)
-    pieces: HashMap<Position, Piece>,
+    /// 棋子数组 (90 格, row-major: index = row * 9 + col)
+    squares: [Option<Piece>; 90],
     /// 当前走子方
     side_to_move: Color,
     /// 红方物质分 (增量维护)
     red_material_score: i32,
     /// 黑方物质分 (增量维护)
     black_material_score: i32,
+    /// 红方帅位置缓存
+    red_king_pos: Option<Position>,
+    /// 黑方将位置缓存
+    black_king_pos: Option<Position>,
 }
 
 impl Board {
     /// 创建空棋盘
     pub fn new() -> Self {
         Self {
-            pieces: HashMap::new(),
+            squares: [None; 90],
             side_to_move: Color::Red,
             red_material_score: 0,
             black_material_score: 0,
+            red_king_pos: None,
+            black_king_pos: None,
         }
     }
 
@@ -90,8 +100,8 @@ impl Board {
         for row in 0..10u8 {
             let mut empty_count = 0;
             for col in 0..9u8 {
-                let pos = Position::new(col, row);
-                if let Some(piece) = self.pieces.get(&pos) {
+                let idx = (row as usize) * 9 + (col as usize);
+                if let Some(piece) = &self.squares[idx] {
                     if empty_count > 0 {
                         fen.push_str(&empty_count.to_string());
                         empty_count = 0;
@@ -129,27 +139,40 @@ impl Board {
             Color::Red => self.red_material_score += value,
             Color::Black => self.black_material_score += value,
         }
-        self.pieces.insert(pos, piece);
+        // 缓存将帅位置
+        if piece.piece_type == PieceType::King {
+            match piece.color {
+                Color::Red => self.red_king_pos = Some(pos),
+                Color::Black => self.black_king_pos = Some(pos),
+            }
+        }
+        self.squares[pos_index(pos)] = Some(piece);
     }
 
     /// 获取某位置棋子
     pub fn piece_at(&self, pos: Position) -> Option<Piece> {
-        self.pieces.get(&pos).copied()
+        self.squares[pos_index(pos)]
     }
 
     /// 获取所有棋子及其位置
     pub fn all_pieces(&self) -> impl Iterator<Item = (Position, Piece)> + '_ {
-        self.pieces.iter().map(|(&pos, &piece)| (pos, piece))
+        self.squares.iter().enumerate().filter_map(|(idx, &opt)| {
+            opt.map(|piece| {
+                let row = (idx / 9) as u8;
+                let col = (idx % 9) as u8;
+                (Position::new(col, row), piece)
+            })
+        })
     }
 
     /// 获取某颜色的所有棋子
     pub fn pieces_of_color(&self, color: Color) -> impl Iterator<Item = (Position, Piece)> + '_ {
-        self.pieces.iter().filter_map(move |(&pos, &piece)| {
-            if piece.color == color {
-                Some((pos, piece))
-            } else {
-                None
-            }
+        self.squares.iter().enumerate().filter_map(move |(idx, &opt)| {
+            opt.filter(|p| p.color == color).map(|piece| {
+                let row = (idx / 9) as u8;
+                let col = (idx % 9) as u8;
+                (Position::new(col, row), piece)
+            })
         })
     }
 
@@ -175,14 +198,33 @@ impl Board {
 
     /// 执行走法，返回被吃棋子
     pub fn make_move(&mut self, m: Move) -> Option<Piece> {
-        let piece = self.pieces.remove(&m.from).expect("Piece must exist at from position");
-        let captured = self.pieces.insert(m.to, piece);
+        let from_idx = pos_index(m.from);
+        let to_idx = pos_index(m.to);
+        let piece = self.squares[from_idx].take().expect("Piece must exist at from position");
+        let captured = self.squares[to_idx].replace(piece);
 
         // 更新物质分
         if let Some(cap) = captured {
             match cap.color {
                 Color::Red => self.red_material_score -= cap.base_value(),
                 Color::Black => self.black_material_score -= cap.base_value(),
+            }
+        }
+
+        // 更新将帅位置缓存
+        if piece.piece_type == PieceType::King {
+            match piece.color {
+                Color::Red => self.red_king_pos = Some(m.to),
+                Color::Black => self.black_king_pos = Some(m.to),
+            }
+        }
+        // 如果吃掉了将帅，清除缓存
+        if let Some(cap) = captured {
+            if cap.piece_type == PieceType::King {
+                match cap.color {
+                    Color::Red => self.red_king_pos = None,
+                    Color::Black => self.black_king_pos = None,
+                }
             }
         }
 
@@ -197,8 +239,18 @@ impl Board {
         // 恢复走子方
         self.side_to_move = self.side_to_move.opposite();
 
-        let piece = self.pieces.remove(&m.to).expect("Piece must exist at to position");
-        self.pieces.insert(m.from, piece);
+        let from_idx = pos_index(m.from);
+        let to_idx = pos_index(m.to);
+        let piece = self.squares[to_idx].take().expect("Piece must exist at to position");
+        self.squares[from_idx] = Some(piece);
+
+        // 恢复将帅位置缓存
+        if piece.piece_type == PieceType::King {
+            match piece.color {
+                Color::Red => self.red_king_pos = Some(m.from),
+                Color::Black => self.black_king_pos = Some(m.from),
+            }
+        }
 
         // 恢复被吃棋子
         if let Some(cap) = captured {
@@ -206,7 +258,14 @@ impl Board {
                 Color::Red => self.red_material_score += cap.base_value(),
                 Color::Black => self.black_material_score += cap.base_value(),
             }
-            self.pieces.insert(m.to, cap);
+            // 恢复被吃将帅的位置缓存
+            if cap.piece_type == PieceType::King {
+                match cap.color {
+                    Color::Red => self.red_king_pos = Some(m.to),
+                    Color::Black => self.black_king_pos = Some(m.to),
+                }
+            }
+            self.squares[to_idx] = Some(cap);
         }
     }
 
@@ -217,17 +276,15 @@ impl Board {
 
     /// 棋子数量
     pub fn piece_count(&self) -> usize {
-        self.pieces.len()
+        self.squares.iter().filter(|s| s.is_some()).count()
     }
 
-    /// 找到某方将/帅的位置
+    /// 找到某方将/帅的位置 (O(1) 使用缓存)
     pub fn find_king(&self, color: Color) -> Option<Position> {
-        for (&pos, &piece) in &self.pieces {
-            if piece.color == color && piece.piece_type == PieceType::King {
-                return Some(pos);
-            }
+        match color {
+            Color::Red => self.red_king_pos,
+            Color::Black => self.black_king_pos,
         }
-        None
     }
 }
 

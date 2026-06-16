@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "chess-engine",
+    "chess-server",
+]
+resolver = "3"
