@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::db::models::*;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
+use crate::services::elo_service;
 use crate::AppState;
 
 /// POST /api/games/{id}/move — 走棋
@@ -37,7 +38,7 @@ pub async fn make_move(
         player_color,
         &data.from,
         &data.to,
-    ).await.map_err(|e| AppError::GameError(e))?;
+    ).await.map_err(AppError::GameError)?;
 
     // 更新数据库
     if result.is_game_over {
@@ -48,28 +49,17 @@ pub async fn make_move(
             _ => ("draw", "unknown"),
         };
         let moves_json = serde_json::to_string(&result.move_history_uci).unwrap_or("[]".into());
-        state.game_repo.finish_game(id, result_str, reason_str, &result.fen, &moves_json).await?;
 
-        // 更新 Elo 评分
-        if let (Some(red_id), Some(black_id)) = (game.red_player_id, game.black_player_id) {
-            let red_user = state.user_repo.find_by_id(red_id).await?;
-            let black_user = state.user_repo.find_by_id(black_id).await?;
-            if let (Some(ru), Some(bu)) = (red_user, black_user) {
-                let (red_score, black_score) = match result_str {
-                    "red_win" => (1.0, 0.0),
-                    "black_win" => (0.0, 1.0),
-                    _ => (0.5, 0.5),
-                };
-                let new_red = crate::db::repositories::user_repo::calculate_new_rating(ru.rating, bu.rating, red_score);
-                let new_black = crate::db::repositories::user_repo::calculate_new_rating(bu.rating, ru.rating, black_score);
-                if let Err(e) = state.user_repo.update_rating(red_id, new_red, red_score > 0.5, red_score == 0.5).await {
-                    tracing::error!("Failed to update Elo rating for red player {}: {}", red_id, e);
-                }
-                if let Err(e) = state.user_repo.update_rating(black_id, new_black, black_score > 0.5, black_score == 0.5).await {
-                    tracing::error!("Failed to update Elo rating for black player {}: {}", black_id, e);
-                }
-            }
-        }
+        elo_service::finish_game_with_elo(
+            &state.game_repo,
+            &state.user_repo,
+            id,
+            &game,
+            result_str,
+            reason_str,
+            &result.fen,
+            &moves_json,
+        ).await?;
     } else {
         let moves_json = serde_json::to_string(&result.move_history_uci).unwrap_or("[]".into());
         state.game_repo.update_fen(id, &result.fen, &moves_json).await?;
