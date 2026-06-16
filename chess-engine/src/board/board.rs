@@ -333,4 +333,179 @@ mod tests {
         let parsed = Move::from_uci(&uci).unwrap();
         assert_eq!(m, parsed);
     }
+
+    #[test]
+    fn test_empty_board() {
+        let board = Board::new();
+        assert_eq!(board.piece_count(), 0);
+        assert_eq!(board.side_to_move(), Color::Red);
+        assert_eq!(board.red_material_score(), 0);
+        assert_eq!(board.black_material_score(), 0);
+        assert!(board.find_king(Color::Red).is_none());
+    }
+
+    #[test]
+    fn test_fen_invalid_rows() {
+        // Too few rows
+        assert!(Board::from_fen("rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9 w").is_err());
+        // Too many rows
+        assert!(Board::from_fen("rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR/9 w").is_err());
+    }
+
+    #[test]
+    fn test_fen_invalid_columns() {
+        // Row with only 8 columns
+        assert!(Board::from_fen("rnbakabn/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w").is_err());
+    }
+
+    #[test]
+    fn test_fen_invalid_characters() {
+        assert!(Board::from_fen("rnbakabxr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w").is_err());
+    }
+
+    #[test]
+    fn test_fen_empty_string() {
+        assert!(Board::from_fen("").is_err());
+    }
+
+    #[test]
+    fn test_fen_side_to_move() {
+        let fen_red = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1";
+        let board_red = Board::from_fen(fen_red).unwrap();
+        assert_eq!(board_red.side_to_move(), Color::Red);
+
+        let fen_black = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR b - - 0 1";
+        let board_black = Board::from_fen(fen_black).unwrap();
+        assert_eq!(board_black.side_to_move(), Color::Black);
+    }
+
+    #[test]
+    fn test_fen_invalid_side() {
+        let fen = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR x - - 0 1";
+        assert!(Board::from_fen(fen).is_err());
+    }
+
+    #[test]
+    fn test_initial_position_piece_placements() {
+        let board = Board::initial();
+        // Black back rank
+        assert_eq!(board.piece_at(Position::new(0, 0)).unwrap().piece_type, PieceType::Rook);
+        assert_eq!(board.piece_at(Position::new(1, 0)).unwrap().piece_type, PieceType::Knight);
+        assert_eq!(board.piece_at(Position::new(2, 0)).unwrap().piece_type, PieceType::Bishop);
+        assert_eq!(board.piece_at(Position::new(3, 0)).unwrap().piece_type, PieceType::Advisor);
+        assert_eq!(board.piece_at(Position::new(4, 0)).unwrap().piece_type, PieceType::King);
+        assert_eq!(board.piece_at(Position::new(5, 0)).unwrap().piece_type, PieceType::Advisor);
+        assert_eq!(board.piece_at(Position::new(6, 0)).unwrap().piece_type, PieceType::Bishop);
+        assert_eq!(board.piece_at(Position::new(7, 0)).unwrap().piece_type, PieceType::Knight);
+        assert_eq!(board.piece_at(Position::new(8, 0)).unwrap().piece_type, PieceType::Rook);
+
+        // Red back rank
+        assert_eq!(board.piece_at(Position::new(0, 9)).unwrap().piece_type, PieceType::Rook);
+        assert_eq!(board.piece_at(Position::new(4, 9)).unwrap().piece_type, PieceType::King);
+
+        // Black cannons
+        assert_eq!(board.piece_at(Position::new(1, 2)).unwrap().piece_type, PieceType::Cannon);
+        assert_eq!(board.piece_at(Position::new(7, 2)).unwrap().piece_type, PieceType::Cannon);
+
+        // Red cannons
+        assert_eq!(board.piece_at(Position::new(1, 7)).unwrap().piece_type, PieceType::Cannon);
+        assert_eq!(board.piece_at(Position::new(7, 7)).unwrap().piece_type, PieceType::Cannon);
+
+        // Pawns
+        for col in (0..=8).step_by(2) {
+            assert_eq!(board.piece_at(Position::new(col, 3)).unwrap().piece_type, PieceType::Pawn);
+            assert_eq!(board.piece_at(Position::new(col, 3)).unwrap().color, Color::Black);
+            assert_eq!(board.piece_at(Position::new(col, 6)).unwrap().piece_type, PieceType::Pawn);
+            assert_eq!(board.piece_at(Position::new(col, 6)).unwrap().color, Color::Red);
+        }
+    }
+
+    #[test]
+    fn test_initial_position_color_counts() {
+        let board = Board::initial();
+        let red_count = board.pieces_of_color(Color::Red).count();
+        let black_count = board.pieces_of_color(Color::Black).count();
+        assert_eq!(red_count, 16);
+        assert_eq!(black_count, 16);
+    }
+
+    #[test]
+    fn test_make_move_captures() {
+        // Set up a position where a capture happens
+        // Black king at b0 (1,0), Red rook at h0 (7,0) on same row
+        let fen = "1k5R1/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let mut board = Board::from_fen(fen).unwrap();
+        let red_score_before = board.red_material_score();
+        let black_score_before = board.black_material_score();
+
+        // Red rook captures black king at (1,0)
+        let m = Move::new(Position::new(7, 0), Position::new(1, 0));
+        let captured = board.make_move(m);
+        assert!(captured.is_some());
+        assert_eq!(captured.unwrap().piece_type, PieceType::King);
+        assert_eq!(captured.unwrap().color, Color::Black);
+        assert_eq!(board.black_material_score(), black_score_before - 10000);
+
+        // Undo
+        board.undo_move(m, captured);
+        assert_eq!(board.red_material_score(), red_score_before);
+        assert_eq!(board.black_material_score(), black_score_before);
+    }
+
+    #[test]
+    fn test_multiple_make_undo_moves() {
+        let board = Board::initial();
+        let fen_before = board.to_fen();
+
+        let mut board = board;
+        let mut history: Vec<(Move, Option<Piece>)> = Vec::new();
+
+        // Make several moves
+        let moves = [
+            Move::new(Position::new(1, 7), Position::new(4, 7)), // 炮二平五
+            Move::new(Position::new(1, 0), Position::new(2, 2)), // 马8进7
+            Move::new(Position::new(7, 7), Position::new(4, 7)), // This is invalid (already occupied) - let's pick a different move
+        ];
+
+        // First two moves
+        for &m in &moves[0..2] {
+            let captured = board.make_move(m);
+            history.push((m, captured));
+        }
+
+        // Undo all
+        for (m, captured) in history.into_iter().rev() {
+            board.undo_move(m, captured);
+        }
+
+        assert_eq!(board.to_fen(), fen_before);
+    }
+
+    #[test]
+    fn test_fen_custom_position() {
+        // Only two kings on the board
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert_eq!(board.piece_count(), 2);
+        assert_eq!(board.find_king(Color::Red), Some(Position::new(4, 9)));
+        assert_eq!(board.find_king(Color::Black), Some(Position::new(4, 0)));
+    }
+
+    #[test]
+    fn test_set_side_to_move() {
+        let mut board = Board::new();
+        board.set_side_to_move(Color::Black);
+        assert_eq!(board.side_to_move(), Color::Black);
+        board.set_side_to_move(Color::Red);
+        assert_eq!(board.side_to_move(), Color::Red);
+    }
+
+    #[test]
+    fn test_is_in_bounds() {
+        assert!(Board::is_in_bounds(Position::new(0, 0)));
+        assert!(Board::is_in_bounds(Position::new(8, 9)));
+        assert!(Board::is_in_bounds(Position::new(4, 5)));
+        // Position with col > 8 or row > 9 cannot be constructed via Position::new
+        // since u8 can hold any value, but is_valid() checks
+    }
 }

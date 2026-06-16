@@ -131,9 +131,11 @@ mod tests {
     #[test]
     fn test_validate_would_be_in_check() {
         // 构造一个走法会导致自己被将的局面
-        let fen = "4k4/4r4/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        // Red king at d9 (3,9), black rook at e8 (4,8)
+        // King moving to e9 (4,9) would be on same file as rook at (4,8) - in check
+        let fen = "4k4/9/9/9/9/9/9/9/4r4/3K5 w - - 0 1";
         let board = Board::from_fen(fen).unwrap();
-        // 红帅往右走会被车将军
-        // 实际上帅只能在九宫内，这里帅已经没有合法走法如果车在将军
+        let m = Move::new(Position::new(3, 9), Position::new(4, 9));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::WouldBeInCheck));
     }
 }

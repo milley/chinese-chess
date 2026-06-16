@@ -193,3 +193,190 @@ impl fmt::Display for Move {
         write!(f, "{}", self.to_uci())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === Color tests ===
+
+    #[test]
+    fn test_color_opposite() {
+        assert_eq!(Color::Red.opposite(), Color::Black);
+        assert_eq!(Color::Black.opposite(), Color::Red);
+        assert_eq!(Color::Red.opposite().opposite(), Color::Red);
+    }
+
+    #[test]
+    fn test_color_display() {
+        assert_eq!(format!("{}", Color::Red), "red");
+        assert_eq!(format!("{}", Color::Black), "black");
+    }
+
+    // === PieceType tests ===
+
+    #[test]
+    fn test_piece_type_base_values() {
+        assert_eq!(PieceType::King.base_value(), 10000);
+        assert_eq!(PieceType::Rook.base_value(), 600);
+        assert_eq!(PieceType::Cannon.base_value(), 285);
+        assert_eq!(PieceType::Knight.base_value(), 270);
+        assert_eq!(PieceType::Bishop.base_value(), 120);
+        assert_eq!(PieceType::Advisor.base_value(), 120);
+        assert_eq!(PieceType::Pawn.base_value(), 30);
+    }
+
+    #[test]
+    fn test_piece_type_chinese_name() {
+        // Red pieces
+        assert_eq!(PieceType::King.chinese_name(Color::Red), "帅");
+        assert_eq!(PieceType::Advisor.chinese_name(Color::Red), "仕");
+        assert_eq!(PieceType::Bishop.chinese_name(Color::Red), "相");
+        assert_eq!(PieceType::Knight.chinese_name(Color::Red), "马");
+        assert_eq!(PieceType::Rook.chinese_name(Color::Red), "车");
+        assert_eq!(PieceType::Cannon.chinese_name(Color::Red), "炮");
+        assert_eq!(PieceType::Pawn.chinese_name(Color::Red), "兵");
+        // Black pieces
+        assert_eq!(PieceType::King.chinese_name(Color::Black), "将");
+        assert_eq!(PieceType::Advisor.chinese_name(Color::Black), "士");
+        assert_eq!(PieceType::Bishop.chinese_name(Color::Black), "象");
+        assert_eq!(PieceType::Knight.chinese_name(Color::Black), "马");
+        assert_eq!(PieceType::Rook.chinese_name(Color::Black), "车");
+        assert_eq!(PieceType::Cannon.chinese_name(Color::Black), "炮");
+        assert_eq!(PieceType::Pawn.chinese_name(Color::Black), "卒");
+    }
+
+    #[test]
+    fn test_piece_type_fen_char_roundtrip() {
+        let all_types = [
+            PieceType::King, PieceType::Advisor, PieceType::Bishop,
+            PieceType::Knight, PieceType::Rook, PieceType::Cannon, PieceType::Pawn,
+        ];
+        for color in [Color::Red, Color::Black] {
+            for &pt in &all_types {
+                let ch = pt.to_fen_char(color);
+                let piece = Piece::from_fen_char(ch).unwrap();
+                assert_eq!(piece.color, color);
+                assert_eq!(piece.piece_type, pt);
+            }
+        }
+    }
+
+    #[test]
+    fn test_piece_type_fen_char_case() {
+        // Red = uppercase, Black = lowercase
+        assert!(PieceType::King.to_fen_char(Color::Red).is_uppercase());
+        assert!(PieceType::King.to_fen_char(Color::Black).is_lowercase());
+    }
+
+    #[test]
+    fn test_piece_type_from_invalid_fen() {
+        assert!(PieceType::from_fen_char('x').is_none());
+        assert!(PieceType::from_fen_char('1').is_none());
+        assert!(PieceType::from_fen_char(' ').is_none());
+    }
+
+    // === Piece tests ===
+
+    #[test]
+    fn test_piece_new() {
+        let piece = Piece::new(Color::Red, PieceType::King);
+        assert_eq!(piece.color, Color::Red);
+        assert_eq!(piece.piece_type, PieceType::King);
+    }
+
+    #[test]
+    fn test_piece_base_value() {
+        let rook = Piece::new(Color::Red, PieceType::Rook);
+        assert_eq!(rook.base_value(), 600);
+    }
+
+    #[test]
+    fn test_piece_chinese_name() {
+        let red_king = Piece::new(Color::Red, PieceType::King);
+        assert_eq!(red_king.chinese_name(), "帅");
+        let black_king = Piece::new(Color::Black, PieceType::King);
+        assert_eq!(black_king.chinese_name(), "将");
+    }
+
+    #[test]
+    fn test_piece_from_fen_all_chars() {
+        let cases = [
+            ('K', Color::Red, PieceType::King),
+            ('A', Color::Red, PieceType::Advisor),
+            ('B', Color::Red, PieceType::Bishop),
+            ('N', Color::Red, PieceType::Knight),
+            ('R', Color::Red, PieceType::Rook),
+            ('C', Color::Red, PieceType::Cannon),
+            ('P', Color::Red, PieceType::Pawn),
+            ('k', Color::Black, PieceType::King),
+            ('a', Color::Black, PieceType::Advisor),
+            ('b', Color::Black, PieceType::Bishop),
+            ('n', Color::Black, PieceType::Knight),
+            ('r', Color::Black, PieceType::Rook),
+            ('c', Color::Black, PieceType::Cannon),
+            ('p', Color::Black, PieceType::Pawn),
+        ];
+        for (ch, color, pt) in cases {
+            let piece = Piece::from_fen_char(ch).unwrap();
+            assert_eq!(piece.color, color, "Failed for char '{}'", ch);
+            assert_eq!(piece.piece_type, pt, "Failed for char '{}'", ch);
+        }
+    }
+
+    #[test]
+    fn test_piece_from_fen_invalid() {
+        assert!(Piece::from_fen_char('x').is_none());
+        assert!(Piece::from_fen_char('0').is_none());
+    }
+
+    // === Move tests ===
+
+    #[test]
+    fn test_move_uci_parsing() {
+        let m = Move::from_uci("a0a1").unwrap();
+        assert_eq!(m.from, crate::board::Position::new(0, 0));
+        assert_eq!(m.to, crate::board::Position::new(0, 1));
+    }
+
+    #[test]
+    fn test_move_uci_various() {
+        let cases = [
+            ("a0a0", 0, 0, 0, 0),
+            ("e4e5", 4, 4, 4, 5),
+            ("i9i8", 8, 9, 8, 8),
+            ("b2c3", 1, 2, 2, 3),
+        ];
+        for (uci, fc, fr, tc, tr) in cases {
+            let m = Move::from_uci(uci).unwrap();
+            assert_eq!(m.from.col, fc, "from col for {}", uci);
+            assert_eq!(m.from.row, fr, "from row for {}", uci);
+            assert_eq!(m.to.col, tc, "to col for {}", uci);
+            assert_eq!(m.to.row, tr, "to row for {}", uci);
+            assert_eq!(m.to_uci(), uci);
+        }
+    }
+
+    #[test]
+    fn test_move_from_uci_invalid() {
+        assert!(Move::from_uci("").is_none());
+        assert!(Move::from_uci("abc").is_none());
+        assert!(Move::from_uci("j0a0").is_none()); // 'j' is out of bounds
+        assert!(Move::from_uci("a01").is_none());  // wrong length
+    }
+
+    #[test]
+    fn test_move_display() {
+        let m = Move::from_uci("b2c3").unwrap();
+        assert_eq!(format!("{}", m), "b2c3");
+    }
+
+    #[test]
+    fn test_move_equality() {
+        let m1 = Move::new(crate::board::Position::new(0, 0), crate::board::Position::new(0, 1));
+        let m2 = Move::new(crate::board::Position::new(0, 0), crate::board::Position::new(0, 1));
+        let m3 = Move::new(crate::board::Position::new(0, 0), crate::board::Position::new(1, 0));
+        assert_eq!(m1, m2);
+        assert_ne!(m1, m3);
+    }
+}

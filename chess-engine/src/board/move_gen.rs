@@ -336,4 +336,138 @@ mod tests {
             assert!(is_on_own_side(m.to.row, Color::Red), "Bishop must stay on own side");
         }
     }
+
+    #[test]
+    fn test_bishop_eye_blocking() {
+        // 相被塞眼不能走
+        // Bishop at e8 (4,7), pawn at d9 (3,8) blocks eye to c10 (2,9)
+        let fen = "4k4/9/9/9/9/9/9/4B4/3P5/3K5 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let bishop_pos = Position::new(4, 7);
+        let moves: Vec<Move> = board.generate_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == bishop_pos)
+            .collect();
+        // 兵在 (3,8) 塞住左下象眼，(3,9) 不能走
+        let targets: Vec<Position> = moves.iter().map(|m| m.to).collect();
+        assert!(!targets.contains(&Position::new(2, 9)), "Bishop should be blocked by eye at (2,9)");
+    }
+
+    #[test]
+    fn test_knight_all_directions() {
+        // 马在中间无蹩腿
+        let fen = "1k7/9/9/9/9/4N4/9/9/9/5K3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let knight_pos = Position::new(4, 5);
+        let moves: Vec<Move> = board.generate_pseudo_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == knight_pos)
+            .collect();
+        // Unblocked knight in center should have all 8 possible moves
+        assert_eq!(moves.len(), 8, "Unblocked knight should have 8 moves, got {}", moves.len());
+    }
+
+    #[test]
+    fn test_rook_moves_open_file() {
+        let fen = "1k7/9/9/9/9/9/9/9/R8/5K3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let rook_pos = Position::new(0, 8);
+        let moves: Vec<Move> = board.generate_pseudo_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == rook_pos)
+            .collect();
+        // Rook at a8 can move up to a9, down to a7-a0, and right
+        // Up: a9, Down: a7-a0 (8 squares), Right: b8-h8 (8 squares) = 17
+        assert_eq!(moves.len(), 17, "Rook on open file should have 17 moves, got {}", moves.len());
+    }
+
+    #[test]
+    fn test_cannon_with_screen() {
+        // 炮有炮架可以吃子
+        // Red cannon at e8 (4,7), red pawn screen at e7 (4,6), black bishop at e6 (4,5)
+        let fen = "1k7/9/9/9/9/4b4/4P4/4C4/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let cannon_pos = Position::new(4, 7);
+        let captures: Vec<Move> = board.generate_pseudo_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == cannon_pos && board.piece_at(m.to).is_some())
+            .collect();
+        // Cannon at (4,7) can capture bishop at (4,5) through screen pawn at (4,6)
+        assert!(captures.len() >= 1, "Cannon should be able to capture through screen, got {} captures", captures.len());
+    }
+
+    #[test]
+    fn test_advisor_moves_in_palace() {
+        // Advisor at d8 (3,8) in red palace
+        let fen = "4k4/9/9/9/9/9/9/9/3A5/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let advisor_pos = Position::new(3, 8);
+        let moves: Vec<Move> = board.generate_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == advisor_pos)
+            .collect();
+        for m in &moves {
+            assert!(is_in_palace(m.to, Color::Red), "Advisor must stay in palace");
+        }
+    }
+
+    #[test]
+    fn test_black_pawn_before_river() {
+        // Black pawn at i3 (8,3), before the river (black side is rows 0-4)
+        // Black king at b0, Red king at e5
+        let fen = "1k7/9/9/8p/9/4K4/9/9/9/9 b - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let pawn_pos = Position::new(8, 3);
+        let moves: Vec<Move> = board.generate_legal_moves(Color::Black)
+            .into_iter()
+            .filter(|m| m.from == pawn_pos)
+            .collect();
+        // Black pawn before river: only forward (row increases)
+        assert_eq!(moves.len(), 1, "Black pawn before river should have 1 move");
+        assert_eq!(moves[0].to, Position::new(8, 4));
+    }
+
+    #[test]
+    fn test_cannot_capture_own_pieces() {
+        let board = Board::initial();
+        let red_moves = board.generate_legal_moves(Color::Red);
+        // No red move should capture a red piece
+        for m in &red_moves {
+            if let Some(target) = board.piece_at(m.to) {
+                assert_ne!(target.color, Color::Red, "Red should not capture own piece: {:?}", m);
+            }
+        }
+    }
+
+    #[test]
+    fn test_pseudo_vs_legal_moves() {
+        let board = Board::initial();
+        let pseudo = board.generate_pseudo_legal_moves(Color::Red);
+        let legal = board.generate_legal_moves(Color::Red);
+        // Legal moves should be a subset of pseudo-legal moves
+        assert!(legal.len() <= pseudo.len());
+        // In initial position, all pseudo-legal moves should be legal
+        assert_eq!(legal.len(), pseudo.len(), "In initial position, pseudo-legal should equal legal");
+    }
+
+    #[test]
+    fn test_pawn_center_after_river() {
+        // Center pawn after river has 3 moves
+        let fen = "1k7/9/9/9/4P4/9/9/9/9/5K3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let pawn_pos = Position::new(4, 4);
+        let moves: Vec<Move> = board.generate_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == pawn_pos)
+            .collect();
+        assert_eq!(moves.len(), 3, "Center pawn after river should have 3 moves (forward, left, right), got {}", moves.len());
+    }
+
+    #[test]
+    fn test_move_generation_does_not_mutate_board() {
+        let board = Board::initial();
+        let fen_before = board.to_fen();
+        let _moves = board.generate_legal_moves(Color::Red);
+        assert_eq!(board.to_fen(), fen_before, "Generating moves should not mutate board");
+    }
 }
