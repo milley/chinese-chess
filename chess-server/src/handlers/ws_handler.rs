@@ -6,7 +6,6 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::utils::auth::verify_token;
-use crate::websocket::client::Client;
 use crate::websocket::message::{ClientMessage, ServerMessage};
 use crate::AppState;
 
@@ -33,6 +32,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     // 客户端信息 (认证后填充)
     let mut authenticated_user: Option<(Uuid, String)> = None;
+    // 当前加入的对局 ID (用于断连清理)
+    let mut current_game_id: Option<Uuid> = None;
 
     // 接收消息循环
     while let Some(msg) = receiver.next().await {
@@ -66,8 +67,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     ClientMessage::MakeMove { game_id, from, to } => {
                         if let Some((user_id, _username)) = &authenticated_user {
                             if let Ok(gid) = Uuid::parse_str(&game_id) {
-                                // Try to make move via room manager
-                                // For now, we need the player's color from the game data
                                 let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                 if let Some(game) = game {
                                     let player_color = if game.red_player_id == Some(*user_id) {
@@ -87,10 +86,38 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
                     ClientMessage::JoinGame { game_id } => {
-                        // handled in REST for now
+                        if let Some((user_id, username)) = &authenticated_user {
+                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                                current_game_id = Some(gid);
+                                let room = state.room_manager.get_or_create_room(gid).await;
+                                if let Ok(room) = room {
+                                    // Determine color from DB
+                                    let game = state.game_repo.find_by_id(gid).await.ok().flatten();
+                                    if let Some(game) = game {
+                                        let color = if game.red_player_id == Some(*user_id) {
+                                            chess_engine::Color::Red
+                                        } else if game.black_player_id == Some(*user_id) {
+                                            chess_engine::Color::Black
+                                        } else {
+                                            continue;
+                                        };
+                                        let client = crate::websocket::client::Client::new(*user_id, username.clone(), tx.clone());
+                                        room.join(client, color).await.ok();
+                                    }
+                                }
+                            }
+                        }
                     }
                     ClientMessage::LeaveGame { game_id } => {
-                        // cleanup
+                        if let Some((user_id, _)) = &authenticated_user {
+                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                                let room = state.room_manager.get_or_create_room(gid).await;
+                                if let Ok(room) = room {
+                                    room.leave(*user_id).await.ok();
+                                }
+                                current_game_id = None;
+                            }
+                        }
                     }
                     ClientMessage::Resign { game_id } => {
                         if let Some((user_id, _)) = &authenticated_user {
@@ -103,10 +130,30 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
                     ClientMessage::OfferDraw { game_id } => {
-                        // TODO: implement draw offer
+                        if let Some((user_id, _)) = &authenticated_user {
+                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                                let room = state.room_manager.get_or_create_room(gid).await;
+                                if let Ok(room) = room {
+                                    if let Err(e) = room.offer_draw(*user_id).await {
+                                        let msg = ServerMessage::Error { message: e };
+                                        tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                    }
+                                }
+                            }
+                        }
                     }
                     ClientMessage::RespondDraw { game_id, accept } => {
-                        // TODO: implement draw response
+                        if let Some((user_id, _)) = &authenticated_user {
+                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                                let room = state.room_manager.get_or_create_room(gid).await;
+                                if let Ok(room) = room {
+                                    if let Err(e) = room.respond_draw(*user_id, accept).await {
+                                        let msg = ServerMessage::Error { message: e };
+                                        tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -116,6 +163,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     }
 
-    // 清理
+    // 断连清理: 从房间移除玩家并通知对手
+    if let Some((user_id, _)) = &authenticated_user {
+        if let Some(gid) = current_game_id {
+            let room = state.room_manager.get_or_create_room(gid).await;
+            if let Ok(room) = room {
+                room.handle_disconnect(*user_id).await;
+            }
+        }
+    }
+
     send_task.abort();
 }

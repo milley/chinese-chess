@@ -16,8 +16,12 @@ pub async fn create_game(
     Json(data): Json<CreateGameRequest>,
 ) -> Result<Json<CreateGameResponse>, AppError> {
     let color = data.player_color.as_deref().unwrap_or("red");
+    if color != "red" && color != "black" {
+        return Err(AppError::BadRequest("player_color must be 'red' or 'black'".into()));
+    }
     let game = state.game_repo.create(
         auth.user_id,
+        color,
         data.time_control,
         data.move_time_limit,
         data.byoyomi,

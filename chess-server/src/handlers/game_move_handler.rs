@@ -47,7 +47,8 @@ pub async fn make_move(
             Some("draw") => ("draw", result.end_reason.as_deref().unwrap_or("draw")),
             _ => ("draw", "unknown"),
         };
-        state.game_repo.finish_game(id, result_str, reason_str, &result.fen, "[]").await?;
+        let moves_json = serde_json::to_string(&result.move_history_uci).unwrap_or("[]".into());
+        state.game_repo.finish_game(id, result_str, reason_str, &result.fen, &moves_json).await?;
 
         // 更新 Elo 评分
         if let (Some(red_id), Some(black_id)) = (game.red_player_id, game.black_player_id) {
@@ -70,7 +71,7 @@ pub async fn make_move(
             }
         }
     } else {
-        let moves_json = serde_json::to_string(&Vec::<String>::new()).unwrap_or("[]".into());
+        let moves_json = serde_json::to_string(&result.move_history_uci).unwrap_or("[]".into());
         state.game_repo.update_fen(id, &result.fen, &moves_json).await?;
     }
 

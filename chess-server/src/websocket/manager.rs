@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::db::repositories::game_repo::GameRepository;
+use crate::websocket::message::ServerMessage;
 use crate::websocket::room::{GameRoom, MoveResult};
 
 /// 房间管理器
@@ -58,17 +59,77 @@ impl RoomManager {
         room.make_move(user_id, player_color, from, to).await
     }
 
+    /// 提议和棋
+    pub async fn offer_draw(&self, game_id: Uuid, user_id: Uuid) -> Result<(), String> {
+        let room = self.get_or_create_room(game_id).await?;
+        room.offer_draw(user_id).await
+    }
+
+    /// 响应和棋提议
+    pub async fn respond_draw(&self, game_id: Uuid, user_id: Uuid, accept: bool) -> Result<(), String> {
+        let room = self.get_or_create_room(game_id).await?;
+        room.respond_draw(user_id, accept).await
+    }
+
+    /// 离开对局
+    pub async fn leave(&self, game_id: Uuid, user_id: Uuid) -> Result<(), String> {
+        let room = self.get_or_create_room(game_id).await?;
+        room.leave(user_id).await
+    }
+
+    /// 客户端断连
+    pub async fn handle_disconnect(&self, game_id: Uuid, user_id: Uuid) {
+        if let Ok(room) = self.get_or_create_room(game_id).await {
+            room.handle_disconnect(user_id).await;
+        }
+    }
+
     /// 启动超时检查器
     pub fn start_timeout_checker(&self) {
         let rooms = self.rooms.clone();
+        let game_repo = self.game_repo.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
                 let rooms_guard = rooms.read().await;
-                for (_, _room) in rooms_guard.iter() {
-                    // TODO: Check timeout for each room
-                    // For now, timeout checking is a placeholder
+                for (_, room) in rooms_guard.iter() {
+                    // Check timeout: get game state info from the room
+                    let fen = room.fen().await;
+                    let game_id = room.game_id();
+                    // Load game from DB for time control info
+                    if let Ok(Some(game)) = game_repo.find_by_id(game_id).await {
+                        if game.status != "playing" { continue; }
+
+                        let move_start = room.move_start_time().await;
+                        let elapsed = move_start.elapsed().as_secs() as i32;
+
+                        // Check move time limit
+                        if let Some(time_limit) = game.move_time_limit {
+                            if elapsed >= time_limit {
+                                // Timeout: determine who lost
+                                let color = room.current_side().await;
+                                let (result_str, reason_str) = match color {
+                                    chess_engine::Color::Red => ("black_win", "timeout"),
+                                    chess_engine::Color::Black => ("red_win", "timeout"),
+                                };
+
+                                // End the game in the room
+                                room.timeout(color).await;
+
+                                // Update DB
+                                let _ = game_repo.finish_game(game_id, result_str, reason_str, &fen, "[]").await;
+
+                                // Broadcast
+                                let msg = ServerMessage::GameOver {
+                                    game_id: game_id.to_string(),
+                                    result: result_str.to_string(),
+                                    reason: reason_str.to_string(),
+                                };
+                                room.broadcast(&msg).await;
+                            }
+                        }
+                    }
                 }
             }
         });

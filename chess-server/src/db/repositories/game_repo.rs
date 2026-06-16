@@ -16,13 +16,19 @@ impl GameRepository {
         Self { pool }
     }
 
-    pub async fn create(&self, red_player_id: Uuid, time_control: Option<i32>, move_time_limit: Option<i32>, byoyomi: Option<i32>) -> Result<Game> {
+    pub async fn create(&self, creator_id: Uuid, creator_color: &str, time_control: Option<i32>, move_time_limit: Option<i32>, byoyomi: Option<i32>) -> Result<Game> {
         let red_time = time_control;
         let black_time = time_control;
+        let (red_player_id, black_player_id) = if creator_color == "black" {
+            (None, Some(creator_id))
+        } else {
+            (Some(creator_id), None)
+        };
         let game = sqlx::query_as::<_, Game>(
-            "INSERT INTO games (red_player_id, fen, initial_fen, time_control, move_time_limit, byoyomi, red_time, black_time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'waiting') RETURNING *"
+            "INSERT INTO games (red_player_id, black_player_id, fen, initial_fen, time_control, move_time_limit, byoyomi, red_time, black_time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'waiting') RETURNING *"
         )
         .bind(red_player_id)
+        .bind(black_player_id)
         .bind(INITIAL_FEN)
         .bind(INITIAL_FEN)
         .bind(time_control)
@@ -43,15 +49,32 @@ impl GameRepository {
         Ok(game)
     }
 
-    pub async fn join_game(&self, id: Uuid, black_player_id: Uuid) -> Result<Game> {
-        let game = sqlx::query_as::<_, Game>(
-            "UPDATE games SET black_player_id = $1, status = 'playing', started_at = NOW() WHERE id = $2 AND status = 'waiting' RETURNING *"
-        )
-        .bind(black_player_id)
-        .bind(id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(game)
+    pub async fn join_game(&self, id: Uuid, joining_player_id: Uuid) -> Result<Game> {
+        // Determine which slot to fill based on what's empty
+        let game = self.find_by_id(id).await?
+            .ok_or_else(|| anyhow::anyhow!("Game not found"))?;
+
+        if game.red_player_id.is_none() {
+            // Creator chose black, joiner becomes red
+            Ok(sqlx::query_as::<_, Game>(
+                "UPDATE games SET red_player_id = $1, status = 'playing', started_at = NOW() WHERE id = $2 AND status = 'waiting' RETURNING *"
+            )
+            .bind(joining_player_id)
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?)
+        } else if game.black_player_id.is_none() {
+            // Creator chose red, joiner becomes black
+            Ok(sqlx::query_as::<_, Game>(
+                "UPDATE games SET black_player_id = $1, status = 'playing', started_at = NOW() WHERE id = $2 AND status = 'waiting' RETURNING *"
+            )
+            .bind(joining_player_id)
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?)
+        } else {
+            return Err(anyhow::anyhow!("Game is already full"));
+        }
     }
 
     pub async fn finish_game(&self, id: Uuid, result: &str, end_reason: &str, fen: &str, move_history: &str) -> Result<Game> {
