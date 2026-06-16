@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub struct User {
     pub id: Uuid,
     pub username: String,
+    #[serde(skip)]
     pub password_hash: String,
     pub display_name: Option<String>,
     pub rating: i32,

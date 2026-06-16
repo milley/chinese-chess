@@ -162,10 +162,20 @@ pub async fn list_games(
 
 /// DELETE /api/games/{id}
 pub async fn delete_game(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
+    let game = state.game_repo.find_by_id(id).await?
+        .ok_or(AppError::NotFound("Game not found".into()))?;
+
+    // Only players in the game can delete it
+    let is_player = game.red_player_id == Some(auth.user_id)
+        || game.black_player_id == Some(auth.user_id);
+    if !is_player {
+        return Err(AppError::Forbidden("Only players in this game can delete it".into()));
+    }
+
     state.game_repo.delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

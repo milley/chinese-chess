@@ -57,6 +57,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     ClientMessage::Ping => {
                         tx.send(serde_json::to_string(&ServerMessage::Pong).unwrap_or_default()).ok();
                     }
+                    _ if authenticated_user.is_none() => {
+                        // Reject all non-Auth/Ping messages when not authenticated
+                        tx.send(serde_json::to_string(&ServerMessage::Error {
+                            message: "Authentication required".into(),
+                        }).unwrap_or_default()).ok();
+                    }
                     ClientMessage::MakeMove { game_id, from, to } => {
                         if let Some((user_id, _username)) = &authenticated_user {
                             if let Ok(gid) = Uuid::parse_str(&game_id) {

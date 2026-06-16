@@ -61,8 +61,12 @@ pub async fn make_move(
                 };
                 let new_red = crate::db::repositories::user_repo::calculate_new_rating(ru.rating, bu.rating, red_score);
                 let new_black = crate::db::repositories::user_repo::calculate_new_rating(bu.rating, ru.rating, black_score);
-                let _ = state.user_repo.update_rating(red_id, new_red, red_score > 0.5, red_score == 0.5).await;
-                let _ = state.user_repo.update_rating(black_id, new_black, black_score > 0.5, black_score == 0.5).await;
+                if let Err(e) = state.user_repo.update_rating(red_id, new_red, red_score > 0.5, red_score == 0.5).await {
+                    tracing::error!("Failed to update Elo rating for red player {}: {}", red_id, e);
+                }
+                if let Err(e) = state.user_repo.update_rating(black_id, new_black, black_score > 0.5, black_score == 0.5).await {
+                    tracing::error!("Failed to update Elo rating for black player {}: {}", black_id, e);
+                }
             }
         }
     } else {

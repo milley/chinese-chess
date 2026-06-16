@@ -9,11 +9,11 @@ mod websocket;
 
 use axum::Router;
 use axum::routing::{delete, get, post, put};
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
+use axum::http::HeaderValue;
 
 use crate::config::AppConfig;
 use crate::db::repositories::game_repo::GameRepository;
@@ -66,7 +66,26 @@ async fn main() -> anyhow::Result<()> {
         jwt_secret: config.jwt_secret.clone(),
     };
 
-    // 7. 构建路由
+    // 7. 构建 CORS 层
+    let cors = if config.cors_origins.contains(&"*".to_string()) {
+        CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+    } else if config.cors_origins.is_empty() {
+        tracing::warn!("No CORS_ORIGINS configured; allowing localhost:5173 (Vite dev) as default");
+        CorsLayer::new()
+            .allow_origin("http://localhost:5173".parse::<HeaderValue>().unwrap())
+            .allow_methods(Any)
+            .allow_headers(Any)
+    } else {
+        let origins: Vec<HeaderValue> = config.cors_origins.iter()
+            .filter_map(|o| o.parse::<HeaderValue>().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    };
+
+    // 8. 构建路由
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
         // 用户路由
@@ -94,11 +113,11 @@ async fn main() -> anyhow::Result<()> {
             state.jwt_secret.clone(),
             middleware::add_jwt_secret_to_extensions,
         ))
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    // 8. 启动服务
+    // 9. 启动服务
     use std::net::SocketAddr;
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
     tracing::info!("Server starting on {}", addr);
