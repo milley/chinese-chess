@@ -97,3 +97,48 @@ pub fn calculate_new_rating(rating: i32, opponent_rating: i32, score: f64) -> i3
     let k = 32.0;
     (rating as f64 + k * (score - expected)).round() as i32
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_new_rating_win() {
+        // Equal ratings, winner: rating should increase
+        let new_rating = calculate_new_rating(1500, 1500, 1.0);
+        assert!(new_rating > 1500, "Winning against equal rating should increase rating, got {}", new_rating);
+        // Expected increase: K * (1 - 0.5) = 16
+        assert_eq!(new_rating, 1516);
+    }
+
+    #[test]
+    fn test_calculate_new_rating_loss() {
+        // Equal ratings, loser: rating should decrease
+        let new_rating = calculate_new_rating(1500, 1500, 0.0);
+        assert!(new_rating < 1500, "Losing against equal rating should decrease rating, got {}", new_rating);
+        assert_eq!(new_rating, 1484);
+    }
+
+    #[test]
+    fn test_calculate_new_rating_draw() {
+        // Equal ratings, draw: rating should stay the same
+        let new_rating = calculate_new_rating(1500, 1500, 0.5);
+        assert_eq!(new_rating, 1500, "Drawing against equal rating should not change rating");
+    }
+
+    #[test]
+    fn test_calculate_new_rating_upset_win() {
+        // Low-rated player beating high-rated player: big gain
+        let new_rating = calculate_new_rating(1200, 1800, 1.0);
+        let gain = new_rating - 1200;
+        assert!(gain > 20, "Upset win should have large gain, got {}", gain);
+    }
+
+    #[test]
+    fn test_calculate_new_rating_expected_win() {
+        // High-rated player beating low-rated player: small gain
+        let new_rating = calculate_new_rating(1800, 1200, 1.0);
+        let gain = new_rating - 1800;
+        assert!(gain < 10, "Expected win should have small gain, got {}", gain);
+    }
+}

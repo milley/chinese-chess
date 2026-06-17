@@ -364,6 +364,187 @@ mod tests {
 
     // === pawn_forward_offset tests ===
 
+    // === is_line_clear tests ===
+
+    #[test]
+    fn test_is_line_clear_vertical_no_pieces() {
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(is_line_clear(&board, Position::new(1, 2), Position::new(1, 7)));
+    }
+
+    #[test]
+    fn test_is_line_clear_vertical_blocked() {
+        let fen = "4k4/9/9/9/9/4P4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // e-file: pawn at (4,5) blocks between (4,2) and (4,7)
+        assert!(!is_line_clear(&board, Position::new(4, 2), Position::new(4, 7)));
+    }
+
+    #[test]
+    fn test_is_line_clear_horizontal_no_pieces() {
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(is_line_clear(&board, Position::new(0, 5), Position::new(8, 5)));
+    }
+
+    #[test]
+    fn test_is_line_clear_horizontal_blocked() {
+        let fen = "4k4/9/9/9/9/4P4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Row 5: pawn at (4,5) blocks between (0,5) and (8,5)
+        assert!(!is_line_clear(&board, Position::new(0, 5), Position::new(8, 5)));
+    }
+
+    #[test]
+    fn test_is_line_clear_adjacent() {
+        // Adjacent positions have no pieces between them, always clear
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(is_line_clear(&board, Position::new(4, 5), Position::new(4, 6)));
+    }
+
+    #[test]
+    fn test_is_line_clear_diagonal() {
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Non-linear path: different row and column — always returns true (no pieces to check)
+        assert!(is_line_clear(&board, Position::new(0, 0), Position::new(1, 1)));
+    }
+
+    // === count_pieces_on_line tests ===
+
+    #[test]
+    fn test_count_pieces_on_line_vertical_zero() {
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert_eq!(count_pieces_on_line(&board, Position::new(1, 2), Position::new(1, 7)), 0);
+    }
+
+    #[test]
+    fn test_count_pieces_on_line_vertical_one() {
+        let fen = "4k4/9/9/9/9/4P4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert_eq!(count_pieces_on_line(&board, Position::new(4, 2), Position::new(4, 7)), 1);
+    }
+
+    #[test]
+    fn test_count_pieces_on_line_vertical_two() {
+        let fen = "4k4/9/9/4P4/9/4P4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert_eq!(count_pieces_on_line(&board, Position::new(4, 2), Position::new(4, 7)), 2);
+    }
+
+    #[test]
+    fn test_count_pieces_on_line_horizontal_zero() {
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert_eq!(count_pieces_on_line(&board, Position::new(0, 5), Position::new(8, 5)), 0);
+    }
+
+    #[test]
+    fn test_count_pieces_on_line_horizontal_one() {
+        let fen = "4k4/9/9/9/9/4P4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert_eq!(count_pieces_on_line(&board, Position::new(0, 5), Position::new(8, 5)), 1);
+    }
+
+    #[test]
+    fn test_count_pieces_on_line_diagonal() {
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Diagonal: not on same row or column, returns 0
+        assert_eq!(count_pieces_on_line(&board, Position::new(0, 0), Position::new(8, 9)), 0);
+    }
+
+    // === can_knight_reach tests ===
+
+    #[test]
+    fn test_can_knight_reach_valid() {
+        let fen = "4k4/9/9/9/9/4N4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Knight at (4,5) can reach (3,3) — valid "日" move, no leg block
+        assert!(can_knight_reach(&board, Position::new(4, 5), Position::new(3, 3)));
+    }
+
+    #[test]
+    fn test_can_knight_reach_blocked_leg() {
+        // Knight at e8 (4,7) with pawn at e9 (4,8) blocking the upward leg
+        let fen = "4k4/9/9/9/9/9/9/4N4/4P4/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Knight at (4,7) trying to reach (3,9) — leg at (4,8) is blocked
+        assert!(!can_knight_reach(&board, Position::new(4, 7), Position::new(3, 9)));
+    }
+
+    #[test]
+    fn test_can_knight_reach_invalid_pattern() {
+        let fen = "4k4/9/9/9/9/4N4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Not a valid knight move pattern: same column, one row
+        assert!(!can_knight_reach(&board, Position::new(4, 5), Position::new(4, 4)));
+        // Diagonal: not a knight pattern
+        assert!(!can_knight_reach(&board, Position::new(4, 5), Position::new(5, 6)));
+        // Two steps same direction: not a knight pattern
+        assert!(!can_knight_reach(&board, Position::new(4, 5), Position::new(4, 3)));
+    }
+
+    // === can_pawn_attack tests ===
+
+    #[test]
+    fn test_can_pawn_attack_red_forward() {
+        // Red pawn at (4,5) attacking (4,4) — forward
+        assert!(can_pawn_attack(Position::new(4, 5), Position::new(4, 4), Color::Red));
+    }
+
+    #[test]
+    fn test_can_pawn_attack_red_backward_rejected() {
+        // Red pawn cannot attack backward
+        assert!(!can_pawn_attack(Position::new(4, 5), Position::new(4, 6), Color::Red));
+    }
+
+    #[test]
+    fn test_can_pawn_attack_red_sideways_crossed() {
+        // Red pawn after river (row 4) can attack sideways
+        assert!(can_pawn_attack(Position::new(4, 4), Position::new(3, 4), Color::Red));
+        assert!(can_pawn_attack(Position::new(4, 4), Position::new(5, 4), Color::Red));
+    }
+
+    #[test]
+    fn test_can_pawn_attack_red_sideways_before_river_rejected() {
+        // Red pawn before river (row 6) cannot attack sideways
+        assert!(!can_pawn_attack(Position::new(4, 6), Position::new(3, 6), Color::Red));
+    }
+
+    #[test]
+    fn test_can_pawn_attack_black_forward() {
+        // Black pawn at (4,4) attacking (4,5) — forward for black
+        assert!(can_pawn_attack(Position::new(4, 4), Position::new(4, 5), Color::Black));
+    }
+
+    #[test]
+    fn test_can_pawn_attack_black_backward_rejected() {
+        // Black pawn cannot attack backward
+        assert!(!can_pawn_attack(Position::new(4, 4), Position::new(4, 3), Color::Black));
+    }
+
+    #[test]
+    fn test_can_pawn_attack_black_sideways_crossed() {
+        // Black pawn after river (row 5) can attack sideways
+        assert!(can_pawn_attack(Position::new(4, 5), Position::new(3, 5), Color::Black));
+    }
+
+    #[test]
+    fn test_can_pawn_attack_black_sideways_before_river_rejected() {
+        // Black pawn before river (row 3) cannot attack sideways
+        assert!(!can_pawn_attack(Position::new(4, 3), Position::new(3, 3), Color::Black));
+    }
+
+    #[test]
+    fn test_can_pawn_attack_diagonal_rejected() {
+        // Pawn cannot attack diagonally
+        assert!(!can_pawn_attack(Position::new(4, 4), Position::new(3, 3), Color::Red));
+    }
+
     #[test]
     fn test_pawn_forward_offset_red() {
         assert_eq!(pawn_forward_offset(Color::Red), -1, "Red pawns move upward (row decreases)");

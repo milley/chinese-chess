@@ -245,4 +245,47 @@ mod tests {
         assert!(m3.is_some(), "Should find a move at depth 3");
         // Both should return valid moves (not necessarily the same)
     }
+
+    #[test]
+    fn test_find_best_move_when_game_over() {
+        let mut state = GameState::new();
+        state.resign(Color::Red);
+        assert!(state.is_game_over());
+        let result = find_best_move(&state, 2);
+        assert!(result.is_none(), "Should return None when game is over");
+    }
+
+    #[test]
+    fn test_find_best_move_when_no_legal_moves() {
+        // Position where black is checkmated (no legal moves)
+        let fen = "k8/1R7/R8/9/9/9/9/9/9/7K1 b - - 0 1";
+        let state = GameState::from_fen(fen).unwrap();
+        // Black is in checkmate, but we need to verify from the active side's perspective
+        // If black has no legal moves, the game should already be over
+        let result = find_best_move(&state, 2);
+        // This position should be checkmate, so game_over should be true
+        // (if check_game_end was called during from_fen, but it's not —
+        // from_fen doesn't call check_game_end. So generate_legal_moves returns empty.)
+        // find_best_move checks generate_legal_moves and returns None if empty
+        assert!(result.is_none(), "Should return None when no legal moves exist");
+    }
+
+    #[test]
+    fn test_sort_moves_captures_first() {
+        // Verify that capture moves are ordered before non-capture moves
+        let fen = "4k4/9/9/9/9/9/9/9/R3n4/4K4 w - - 0 1";
+        let state = GameState::from_fen(fen).unwrap();
+        let moves = state.generate_legal_moves();
+        let board = state.board();
+        let sorted = sort_moves(&moves, board);
+
+        // Find the capture move (rook captures knight at d1)
+        let captures: Vec<bool> = sorted.iter().map(|&m| board.piece_at(m.to).is_some()).collect();
+        // All capture moves should come before non-capture moves
+        let first_non_capture = captures.iter().position(|&c| !c);
+        let last_capture = captures.iter().rposition(|&c| c);
+        if let (Some(first_nc), Some(lc)) = (first_non_capture, last_capture) {
+            assert!(lc < first_nc, "All captures should come before non-captures");
+        }
+    }
 }

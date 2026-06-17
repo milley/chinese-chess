@@ -379,4 +379,25 @@ mod tests {
         assert_eq!(m1, m2);
         assert_ne!(m1, m3);
     }
+
+    // === Display trait tests ===
+
+    #[test]
+    fn test_piece_type_display() {
+        assert_eq!(format!("{}", PieceType::King), "king");
+        assert_eq!(format!("{}", PieceType::Advisor), "advisor");
+        assert_eq!(format!("{}", PieceType::Bishop), "bishop");
+        assert_eq!(format!("{}", PieceType::Knight), "knight");
+        assert_eq!(format!("{}", PieceType::Rook), "rook");
+        assert_eq!(format!("{}", PieceType::Cannon), "cannon");
+        assert_eq!(format!("{}", PieceType::Pawn), "pawn");
+    }
+
+    #[test]
+    fn test_piece_display() {
+        let red_king = Piece::new(Color::Red, PieceType::King);
+        assert_eq!(format!("{}", red_king), "red king");
+        let black_rook = Piece::new(Color::Black, PieceType::Rook);
+        assert_eq!(format!("{}", black_rook), "black rook");
+    }
 }

@@ -487,6 +487,77 @@ mod tests {
     }
 
     #[test]
+    fn test_undo_move_on_empty_history() {
+        let mut state = GameState::new();
+        assert!(state.undo_move().is_none(), "Undo on empty history should return None");
+    }
+
+    #[test]
+    fn test_cannot_timeout_after_game_over() {
+        let mut state = GameState::new();
+        state.resign(Color::Red);
+        // Timeout after game over should be a no-op
+        state.timeout(Color::Black);
+        let (result, _) = state.result().unwrap();
+        // Should still be BlackWin from resign, not RedWin from timeout
+        assert_eq!(*result, GameResult::BlackWin);
+    }
+
+    #[test]
+    fn test_from_fen_invalid() {
+        // Invalid FEN with wrong column count
+        let result = GameState::from_fen("invalid_fen");
+        assert!(result.is_err(), "Invalid FEN should return error");
+    }
+
+    #[test]
+    fn test_default_trait() {
+        let state = GameState::default();
+        assert_eq!(state.side_to_move(), Color::Red);
+        assert!(!state.is_game_over());
+        assert!(state.history().is_empty());
+    }
+
+    #[test]
+    fn test_result_none_on_new_game() {
+        let state = GameState::new();
+        assert!(state.result().is_none(), "New game should have no result");
+    }
+
+    #[test]
+    fn test_generate_notation_advisor() {
+        // Advisor notation: 仕 + column + 进/退/平 + target
+        let fen = "4k4/9/9/9/9/9/9/9/3A5/4K4 w - - 0 1";
+        let state = GameState::from_fen(fen).unwrap();
+        // Advisor at d8 (3,8) to e9 (4,9) — diagonal forward for red
+        let m = Move::new(Position::new(3, 8), Position::new(4, 9));
+        let notation = state.generate_notation(m);
+        assert!(notation.contains("仕"), "Advisor notation should contain 仕, got: {}", notation);
+    }
+
+    #[test]
+    fn test_generate_notation_pawn() {
+        // Pawn notation: 兵 + column + 进
+        let fen = "4k4/9/9/9/9/9/P8/9/9/4K4 w - - 0 1";
+        let state = GameState::from_fen(fen).unwrap();
+        // Red pawn at a6 (0,6) advancing to a5 (0,5) — forward
+        let m = Move::new(Position::new(0, 6), Position::new(0, 5));
+        let notation = state.generate_notation(m);
+        assert!(notation.contains("兵"), "Pawn notation should contain 兵, got: {}", notation);
+    }
+
+    #[test]
+    fn test_generate_notation_no_piece_returns_uci() {
+        // When there's no piece at the from position, notation falls back to UCI
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let state = GameState::from_fen(fen).unwrap();
+        // No piece at (0,0), so notation should be the UCI string
+        let m = Move::new(Position::new(0, 0), Position::new(0, 1));
+        let notation = state.generate_notation(m);
+        assert_eq!(notation, "a0a1", "No piece at from should return UCI, got: {}", notation);
+    }
+
+    #[test]
     fn test_game_state_from_fen() {
         let fen = "4k4/9/4P4/9/9/9/9/9/9/3R1R1K1 b - - 0 1";
         let state = GameState::from_fen(fen).unwrap();

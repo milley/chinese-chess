@@ -36,6 +36,84 @@ fn validate_password(password: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === validate_username tests ===
+
+    #[test]
+    fn test_validate_username_valid() {
+        assert!(validate_username("alice").is_ok());
+        assert!(validate_username("Bob_123").is_ok());
+        assert!(validate_username("a").is_err()); // too short
+    }
+
+    #[test]
+    fn test_validate_username_too_short() {
+        assert!(validate_username("ab").is_err());
+        assert!(validate_username("").is_err());
+    }
+
+    #[test]
+    fn test_validate_username_too_long() {
+        let long_name = "a".repeat(21);
+        assert!(validate_username(&long_name).is_err());
+        let max_name = "a".repeat(20);
+        assert!(validate_username(&max_name).is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_must_start_with_letter() {
+        assert!(validate_username("1abc").is_err());
+        assert!(validate_username("_abc").is_err());
+        assert!(validate_username("abc").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_special_chars() {
+        assert!(validate_username("abc@def").is_err());
+        assert!(validate_username("abc def").is_err());
+        assert!(validate_username("abc-def").is_err());
+        assert!(validate_username("abc_def").is_ok()); // underscore is allowed
+    }
+
+    #[test]
+    fn test_validate_username_reserved() {
+        assert!(validate_username("root").is_err());
+        assert!(validate_username("admin").is_err());
+        assert!(validate_username("system").is_err());
+        assert!(validate_username("guest").is_err());
+        assert!(validate_username("administrator").is_err());
+        assert!(validate_username("moderator").is_err());
+        // Case-insensitive
+        assert!(validate_username("Admin").is_err());
+        assert!(validate_username("ROOT").is_err());
+    }
+
+    // === validate_password tests ===
+
+    #[test]
+    fn test_validate_password_valid() {
+        assert!(validate_password("123456").is_ok());
+        assert!(validate_password("securepassword").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_too_short() {
+        assert!(validate_password("12345").is_err());
+        assert!(validate_password("").is_err());
+    }
+
+    #[test]
+    fn test_validate_password_too_long() {
+        let long_pass = "a".repeat(101);
+        assert!(validate_password(&long_pass).is_err());
+        let max_pass = "a".repeat(100);
+        assert!(validate_password(&max_pass).is_ok());
+    }
+}
+
 /// POST /api/users — 注册
 pub async fn register(
     State(state): State<AppState>,

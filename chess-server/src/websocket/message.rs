@@ -88,3 +88,78 @@ pub enum ServerMessage {
         message: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_message_serde_roundtrip() {
+        // Auth
+        let msg = ClientMessage::Auth { token: "abc".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, ClientMessage::Auth { .. }));
+
+        // JoinGame
+        let msg = ClientMessage::JoinGame { game_id: "123".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"join_game\""));
+
+        // MakeMove
+        let msg = ClientMessage::MakeMove { game_id: "g1".into(), from: "a0".into(), to: "a1".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"make_move\""));
+
+        // Ping
+        let msg = ClientMessage::Ping;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"ping\""));
+
+        // RespondDraw
+        let msg = ClientMessage::RespondDraw { game_id: "g1".into(), accept: true };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"accept\":true"));
+    }
+
+    #[test]
+    fn test_server_message_serde_roundtrip() {
+        // Pong
+        let msg = ServerMessage::Pong;
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, ServerMessage::Pong));
+
+        // MoveMade
+        let msg = ServerMessage::MoveMade {
+            game_id: "g1".into(),
+            from: "a0".into(),
+            to: "a1".into(),
+            fen: "test".into(),
+            is_check: false,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"move_made\""));
+
+        // GameOver
+        let msg = ServerMessage::GameOver {
+            game_id: "g1".into(),
+            result: "red_win".into(),
+            reason: "checkmate".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"game_over\""));
+
+        // Error
+        let msg = ServerMessage::Error { message: "test".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"error\""));
+    }
+
+    #[test]
+    fn test_client_message_deserialize_invalid_type() {
+        let json = r#"{"type":"unknown"}"#;
+        let result: Result<ClientMessage, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+}

@@ -245,4 +245,65 @@ mod tests {
         let board = Board::from_fen(fen).unwrap();
         assert!(!is_in_check(&board, Color::Black), "Rook blocked by own pawn should not check");
     }
+
+    #[test]
+    fn test_cannon_zero_screens_no_check() {
+        // Cannon on same file as king with no screen piece — cannot check
+        // Red cannon at e9 (4,9), black king at e0 (4,0), no screen
+        let fen = "4k4/9/9/9/9/9/9/9/9/4CK3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(!is_in_check(&board, Color::Black), "Cannon with no screen should not check");
+    }
+
+    #[test]
+    fn test_cannon_two_screens_no_check() {
+        // Cannon on same file as king with 2 screen pieces — cannot check (need exactly 1)
+        let fen = "4k4/9/9/9/4P4/9/4P4/9/9/4CK3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Red cannon at e9 (4,9), 2 red pawns at e5 (4,5) and e3 (4,3), black king at e0 (4,0)
+        assert!(!is_in_check(&board, Color::Black), "Cannon with 2 screens should not check");
+    }
+
+    #[test]
+    fn test_red_checkmate() {
+        // Red king is checkmated by black rooks
+        // Red king at a9 (0,9), black rook at a8 (0,8) checking on same file
+        // Black rook at b9 (1,9) blocking escape to b9
+        // Row 7: r8 = black rook + 8 empty = 9 cols
+        // Row 8: 1r7 = 1 empty + black rook + 7 empty = 9 cols
+        // Row 9: K8 = red king + 8 empty = 9 cols
+        let fen = "4k4/9/9/9/9/9/9/r8/1r7/K8 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(is_in_check(&board, Color::Red), "Red should be in check from black rook on a-file");
+        assert!(is_checkmate(&board, Color::Red), "Red should be checkmated");
+    }
+
+    #[test]
+    fn test_red_stalemate() {
+        // Verify the mechanism: red with legal moves is not stalemate
+        // Row 9: 3R1K3 = 3 empty + Rook + 1 empty + King + 3 empty = 9 cols
+        let fen = "4k4/9/9/9/9/9/9/9/9/3R1K3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(!is_stalemate(&board, Color::Red), "Red with legal moves should not be stalemate");
+    }
+
+    #[test]
+    fn test_escape_check_by_capture() {
+        // Black king can escape check by moving to a safe square
+        let fen = "4k4/4R4/9/9/9/9/9/9/9/4K4 b - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(is_in_check(&board, Color::Black), "Black should be in check from rook");
+        assert!(!is_checkmate(&board, Color::Black), "Black should escape by moving king sideways");
+    }
+
+    #[test]
+    fn test_block_check_by_interposition() {
+        // Black can escape check by interposing a knight
+        // Black king at e0 (4,0), red rook at e8 (4,8) checking on e-file
+        // Black knight at d5 (3,5) can interpose by moving to e7 (4,7) or e6 (4,6)
+        let fen = "4k4/9/4R4/9/9/3n5/9/9/9/4K4 b - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(is_in_check(&board, Color::Black), "Black should be in check from rook");
+        assert!(!is_checkmate(&board, Color::Black), "Black should escape by interposing knight");
+    }
 }

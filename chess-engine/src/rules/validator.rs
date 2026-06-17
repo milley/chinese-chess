@@ -367,4 +367,61 @@ mod tests {
         let m = Move::new(Position::new(0, 6), Position::new(1, 6));
         assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::IllegalMove));
     }
+
+    #[test]
+    fn test_validate_black_pawn_backward_rejected() {
+        // Black pawn cannot move backward (toward row 0)
+        let fen = "1K7/9/9/9/9/p8/9/9/9/5k3 b - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Black pawn at (0,5) trying to go backward to (0,4)
+        let m = Move::new(Position::new(0, 5), Position::new(0, 4));
+        assert_eq!(validate_move(&board, m, Color::Black), Err(MoveError::IllegalMove));
+    }
+
+    #[test]
+    fn test_validate_black_pawn_sideways_before_river() {
+        // Black pawn cannot move sideways before crossing river (row <= 4 is own side for black)
+        let fen = "1K7/9/9/9/p8/9/9/9/9/5k3 b - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Black pawn at (0,4) trying to go sideways to (1,4)
+        let m = Move::new(Position::new(0, 4), Position::new(1, 4));
+        assert_eq!(validate_move(&board, m, Color::Black), Err(MoveError::IllegalMove));
+    }
+
+    #[test]
+    fn test_validate_cannon_with_two_screens_capture() {
+        // Cannon cannot capture with 2 screen pieces (needs exactly 1)
+        let fen = "4k4/9/9/4P4/9/4P4/9/4C4/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Cannon at (4,7), 2 pawns at (4,5) and (4,3), trying to capture king at (4,0)
+        // But king can't be captured — let's use a different target
+        // Actually we just test that cannon move with 2 screens between is rejected
+        let m = Move::new(Position::new(4, 7), Position::new(4, 2));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::IllegalMove));
+    }
+
+    #[test]
+    fn test_validate_both_out_of_bounds() {
+        let board = Board::initial();
+        // Both from and to are out of bounds
+        let m = Move::new(Position::new(9, 10), Position::new(10, 11));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::OutOfBounds));
+    }
+
+    #[test]
+    fn test_move_error_display() {
+        assert_eq!(MoveError::OutOfBounds.to_string(), "Position out of bounds");
+        assert_eq!(MoveError::NoPieceAtFrom.to_string(), "No piece at source position");
+        assert_eq!(MoveError::WrongColor.to_string(), "Not your piece");
+        assert_eq!(MoveError::CannotCaptureOwnPiece.to_string(), "Cannot capture own piece");
+        assert_eq!(MoveError::IllegalMove.to_string(), "Illegal move for this piece type");
+        assert_eq!(MoveError::WouldBeInCheck.to_string(), "Move would leave king in check");
+        assert_eq!(MoveError::FlyingGeneral.to_string(), "Flying general violation");
+    }
+
+    #[test]
+    fn test_move_error_is_std_error() {
+        let err: Box<dyn std::error::Error> = Box::new(MoveError::IllegalMove);
+        assert!(!err.to_string().is_empty());
+    }
 }

@@ -241,4 +241,41 @@ mod tests {
         let score = evaluate_fast(&board);
         assert!(score < -500, "Black with extra rook should have large negative score, got {}", score);
     }
+
+    #[test]
+    fn test_evaluate_king_only_board() {
+        // Board with only two kings — should not panic, score near zero
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let score_fast = evaluate_fast(&board);
+        let score_full = evaluate(&board);
+        // Only king position value and mobility differ, should be small
+        assert!(score_fast.abs() < 100, "King-only board should have small score, got {}", score_fast);
+        assert!(score_full.abs() < 200, "King-only board with mobility should have small score, got {}", score_full);
+    }
+
+    #[test]
+    fn test_position_value_table_consistency() {
+        // Verify position value is symmetric for red vs black (same piece type)
+        let fen = "4k4/9/9/9/9/4R4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let score = evaluate_fast(&board);
+        // Rook at (4,5) center: position value should be positive (good position)
+        // Material 600 + position ~35 = 635+, minus king position values
+        assert!(score > 500, "Rook at center should score well, got {}", score);
+    }
+
+    #[test]
+    fn test_pawn_crossed_vs_uncrossed_river() {
+        // Red pawn before river (row 6) vs after river (row 4)
+        let fen_before = "4k4/9/9/9/9/9/P8/9/9/4K4 w - - 0 1";
+        let fen_after = "4k4/9/9/9/P8/9/9/9/9/4K4 w - - 0 1";
+        let board_before = Board::from_fen(fen_before).unwrap();
+        let board_after = Board::from_fen(fen_after).unwrap();
+        let score_before = evaluate_fast(&board_before);
+        let score_after = evaluate_fast(&board_after);
+        // Crossed-river pawn should score higher (position bonus + crossed bonus)
+        assert!(score_after > score_before,
+            "Crossed pawn should score higher: after={}, before={}", score_after, score_before);
+    }
 }
