@@ -520,4 +520,149 @@ mod tests {
         let result = tc.tick(Color::Red);
         assert_eq!(result, TickResult::Timeout(Color::Red));
     }
+
+    #[test]
+    fn test_tick_result_ok_carries_correct_values() {
+        let mut tc = TimeControl::new(Some(600), None, None);
+        tc.activate();
+
+        // Tick Red 3 times
+        for _ in 0..3 {
+            let result = tc.tick(Color::Red);
+            match result {
+                TickResult::Ok { red_remaining, black_remaining, active_phase } => {
+                    assert_eq!(black_remaining, 600);
+                    assert!(red_remaining <= 600);
+                    assert_eq!(active_phase, TimePhase::Main);
+                }
+                TickResult::Timeout(_) => panic!("Should not timeout"),
+            }
+        }
+        assert_eq!(tc.red.remaining, 597);
+    }
+
+    #[test]
+    fn test_alternating_sides_tick() {
+        // Simulate a game with alternating Red and Black moves
+        let mut tc = TimeControl::new(Some(10), None, None);
+        tc.activate();
+
+        // Red move: tick 2 times, then Red makes a move
+        for _ in 0..2 {
+            tc.tick(Color::Red);
+        }
+        tc.on_move_made(Color::Red);
+
+        // Black move: tick 3 times, then Black makes a move
+        for _ in 0..3 {
+            tc.tick(Color::Black);
+        }
+        tc.on_move_made(Color::Black);
+
+        // Red: 10-2=8, Black: 10-3=7
+        assert_eq!(tc.red.remaining, 8);
+        assert_eq!(tc.black.remaining, 7);
+    }
+
+    #[test]
+    fn test_remaining_in_byoyomi_decreases_each_tick() {
+        let mut tc = TimeControl::new(Some(1), None, Some(5));
+        tc.activate();
+
+        // Tick once to enter byoyomi
+        tc.tick(Color::Red);
+        assert_eq!(tc.phase(Color::Red), TimePhase::Byoyomi);
+        assert_eq!(tc.remaining(Color::Red), 5); // fresh byoyomi
+
+        // Each tick should decrease the effective remaining
+        tc.tick(Color::Red);
+        assert_eq!(tc.remaining(Color::Red), 4);
+        tc.tick(Color::Red);
+        assert_eq!(tc.remaining(Color::Red), 3);
+        tc.tick(Color::Red);
+        assert_eq!(tc.remaining(Color::Red), 2);
+        tc.tick(Color::Red);
+        assert_eq!(tc.remaining(Color::Red), 1);
+
+        // 5th byoyomi tick → timeout
+        let result = tc.tick(Color::Red);
+        assert_eq!(result, TickResult::Timeout(Color::Red));
+    }
+
+    #[test]
+    fn test_byoyomi_only_no_main_time() {
+        // Unusual config: no main time, start directly in byoyomi
+        let mut tc = TimeControl::new(None, None, Some(3));
+        tc.activate();
+
+        assert_eq!(tc.phase(Color::Red), TimePhase::Byoyomi);
+        assert_eq!(tc.remaining(Color::Red), 3);
+
+        // Tick 2 times — still ok
+        for _ in 0..2 {
+            let result = tc.tick(Color::Red);
+            assert!(matches!(result, TickResult::Ok { .. }));
+        }
+        assert_eq!(tc.remaining(Color::Red), 1);
+
+        // 3rd tick → timeout
+        let result = tc.tick(Color::Red);
+        assert_eq!(result, TickResult::Timeout(Color::Red));
+    }
+
+    #[test]
+    fn test_on_move_made_inactive_no_effect() {
+        let mut tc = TimeControl::new(Some(600), None, None);
+        // NOT activated — on_move_made should be a no-op
+        tc.red.move_elapsed = 5;
+        tc.on_move_made(Color::Red);
+        // move_elapsed should NOT reset because time control is not active
+        assert_eq!(tc.red.move_elapsed, 5);
+    }
+
+    #[test]
+    fn test_new_with_state_zero_remaining_no_byoyomi() {
+        // Red at 0 with no byoyomi — should still be in Main phase (will timeout on next tick)
+        let tc = TimeControl::new_with_state(Some(600), None, None, 0, 300);
+        assert_eq!(tc.red.remaining, 0);
+        assert_eq!(tc.red.phase, TimePhase::Main); // no byoyomi, stays Main
+
+        let mut tc = tc;
+        tc.activate();
+        // Next tick should timeout because remaining is 0 and no byoyomi
+        let result = tc.tick(Color::Red);
+        assert_eq!(result, TickResult::Timeout(Color::Red));
+    }
+
+    #[test]
+    fn test_game_time_exactly_reaches_zero_with_byoyomi() {
+        // When remaining goes to exactly 0, should enter byoyomi (not timeout)
+        let mut tc = TimeControl::new(Some(5), None, Some(10));
+        tc.activate();
+
+        // Tick 5 times — remaining should go 4, 3, 2, 1, 0
+        for _ in 0..5 {
+            let result = tc.tick(Color::Red);
+            assert!(matches!(result, TickResult::Ok { .. }), "Should enter byoyomi, not timeout");
+        }
+
+        // Red should be in byoyomi with remaining=0 and move_elapsed=0
+        assert_eq!(tc.phase(Color::Red), TimePhase::Byoyomi);
+        assert_eq!(tc.red.remaining, 0);
+        assert_eq!(tc.red.move_elapsed, 0);
+    }
+
+    #[test]
+    fn test_time_control_clone_preserves_state() {
+        let mut tc = TimeControl::new(Some(600), Some(30), Some(10));
+        tc.activate();
+        tc.tick(Color::Red);
+        tc.tick(Color::Red);
+
+        let clone = tc.clone();
+        assert_eq!(clone.red.remaining, tc.red.remaining);
+        assert_eq!(clone.red.move_elapsed, tc.red.move_elapsed);
+        assert_eq!(clone.red.phase, tc.red.phase);
+        assert_eq!(clone.active, tc.active);
+    }
 }
