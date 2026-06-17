@@ -328,7 +328,7 @@ impl GameRoom {
     }
 
     /// 发送消息给对方玩家
-    async fn broadcast_to_opponent(&self, color: chess_engine::Color, message: &ServerMessage) {
+    pub async fn broadcast_to_opponent(&self, color: chess_engine::Color, message: &ServerMessage) {
         let json = serde_json::to_string(message).unwrap_or_default();
         let player = match color {
             chess_engine::Color::Red => self.black_player.read().await,
@@ -364,6 +364,17 @@ impl GameRoom {
     /// 获取当前 FEN
     pub async fn fen(&self) -> String {
         self.game_state.read().await.to_fen()
+    }
+
+    /// 检查指定玩家是否在房间内
+    pub async fn has_player(&self, user_id: Uuid) -> bool {
+        let red = self.red_player.read().await;
+        if red.as_ref().map(|c| c.user_id) == Some(user_id) {
+            return true;
+        }
+        drop(red);
+        let black = self.black_player.read().await;
+        black.as_ref().map(|c| c.user_id) == Some(user_id)
     }
 
     /// 获取对局 ID

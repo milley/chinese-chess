@@ -14,10 +14,12 @@ class WebSocketService {
   private messageHandlers: Set<MessageHandler> = new Set();
   private connectHandlers: Set<ConnectionHandler> = new Set();
   private disconnectHandlers: Set<ConnectionHandler> = new Set();
+  private reconnectHandlers: Set<ConnectionHandler> = new Set();
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private wasConnected = false;  // Track if we've ever been connected (to distinguish first connect vs reconnect)
 
   connect(token: string): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -27,7 +29,14 @@ class WebSocketService {
         this.send({ type: 'auth', token });
         this.reconnectAttempts = 0;
         this.startPing();
-        this.connectHandlers.forEach(h => h());
+
+        if (this.wasConnected) {
+          // This is a reconnection, not the first connection
+          this.reconnectHandlers.forEach(h => h());
+        } else {
+          this.wasConnected = true;
+          this.connectHandlers.forEach(h => h());
+        }
         resolve();
       };
 
@@ -63,6 +72,8 @@ class WebSocketService {
 
   disconnect() {
     this.stopPing();
+    this.wasConnected = false;
+    this.reconnectAttempts = this.maxReconnectAttempts; // Prevent auto-reconnect
     if (this.ws) {
       this.ws.close(1000);
       this.ws = null;
@@ -112,6 +123,11 @@ class WebSocketService {
   onDisconnect(handler: ConnectionHandler): () => void {
     this.disconnectHandlers.add(handler);
     return () => this.disconnectHandlers.delete(handler);
+  }
+
+  onReconnect(handler: ConnectionHandler): () => void {
+    this.reconnectHandlers.add(handler);
+    return () => this.reconnectHandlers.delete(handler);
   }
 
   private startPing() {

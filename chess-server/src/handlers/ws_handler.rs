@@ -69,6 +69,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             if let Ok(gid) = Uuid::parse_str(&game_id) {
                                 let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                 if let Some(game) = game {
+                                    if game.status != "playing" {
+                                        let msg = ServerMessage::IllegalMove {
+                                            game_id: game_id.clone(),
+                                            reason: "Game is not in progress".into(),
+                                        };
+                                        tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                        continue;
+                                    }
                                     let player_color = if game.red_player_id == Some(*user_id) {
                                         chess_engine::Color::Red
                                     } else if game.black_player_id == Some(*user_id) {
@@ -77,9 +85,39 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         continue; // Not a player
                                     };
                                     let result = state.room_manager.make_move(gid, *user_id, player_color, &from, &to).await;
-                                    if let Err(e) = result {
-                                        let msg = ServerMessage::IllegalMove { game_id: game_id.clone(), reason: e };
-                                        tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                    match result {
+                                        Ok(move_result) => {
+                                            // Persist to database (same logic as REST handler)
+                                            if move_result.is_game_over {
+                                                let (result_str, reason_str) = match move_result.result.as_deref() {
+                                                    Some("red_win") => ("red_win", move_result.end_reason.as_deref().unwrap_or("checkmate")),
+                                                    Some("black_win") => ("black_win", move_result.end_reason.as_deref().unwrap_or("checkmate")),
+                                                    Some("draw") => ("draw", move_result.end_reason.as_deref().unwrap_or("draw")),
+                                                    _ => ("draw", "unknown"),
+                                                };
+                                                let moves_json = serde_json::to_string(&move_result.move_history_uci).unwrap_or("[]".into());
+                                                let _ = crate::services::elo_service::finish_game_with_elo(
+                                                    &state.game_repo,
+                                                    &state.user_repo,
+                                                    gid,
+                                                    &game,
+                                                    result_str,
+                                                    reason_str,
+                                                    &move_result.fen,
+                                                    &moves_json,
+                                                ).await;
+                                            } else {
+                                                let moves_json = serde_json::to_string(&move_result.move_history_uci).unwrap_or("[]".into());
+                                                let _ = state.game_repo.update_fen(gid, &move_result.fen, &moves_json).await;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let msg = ServerMessage::IllegalMove {
+                                                game_id: game_id.clone(),
+                                                reason: e,
+                                            };
+                                            tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                        }
                                     }
                                 }
                             }
@@ -103,6 +141,40 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         };
                                         let client = crate::websocket::client::Client::new(*user_id, username.clone(), tx.clone());
                                         room.join(client, color).await.ok();
+
+                                        // Send JoinedGame back to the joining player
+                                        let fen = room.fen().await;
+                                        let color_str = match color {
+                                            chess_engine::Color::Red => "red",
+                                            chess_engine::Color::Black => "black",
+                                        };
+                                        let joined_msg = ServerMessage::JoinedGame {
+                                            game_id: game_id.clone(),
+                                            color: color_str.to_string(),
+                                            fen: fen.clone(),
+                                        };
+                                        tx.send(serde_json::to_string(&joined_msg).unwrap_or_default()).ok();
+
+                                        // Notify opponent if they are already in the room
+                                        let opponent_user_id = match color {
+                                            chess_engine::Color::Red => game.black_player_id,
+                                            chess_engine::Color::Black => game.red_player_id,
+                                        };
+                                        if let Some(opp_id) = opponent_user_id {
+                                            // Check if opponent is actually connected in the room
+                                            let opponent_present = room.has_player(opp_id).await;
+                                            if opponent_present {
+                                                if let Ok(Some(opp_user)) = state.user_repo.find_by_id(opp_id).await {
+                                                    let opp_info = crate::db::models::UserInfo::from(opp_user);
+                                                    let opp_joined_msg = ServerMessage::OpponentJoined {
+                                                        game_id: game_id.clone(),
+                                                        opponent: opp_info,
+                                                        fen: fen.clone(),
+                                                    };
+                                                    room.broadcast_to_opponent(color, &opp_joined_msg).await;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }

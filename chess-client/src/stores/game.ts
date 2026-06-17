@@ -85,25 +85,35 @@ export const useGameStore = defineStore('game', () => {
 
   async function makeMove(from: string, to: string) {
     if (!currentGame.value) return;
-    try {
-      const res = await api.makeMove(currentGame.value.id, from, to);
-      if (currentGame.value) {
-        currentGame.value.fen = res.fen;
-      }
-      errorMessage.value = null;
-    } catch (err: any) {
-      errorMessage.value = err.response?.data?.error || 'Move failed';
-    }
+    // Use WebSocket for real-time move delivery (server broadcasts to both players)
+    wsService.makeMove(currentGame.value.id, from, to);
   }
 
   function handleWsMessage(message: WsServerMessage) {
     switch (message.type) {
       case 'joined_game':
-        currentGame.value = {
-          ...currentGame.value!,
-          fen: message.fen,
-          status: 'waiting',
-        };
+        if (currentGame.value) {
+          currentGame.value.fen = message.fen;
+          // Don't override status to 'waiting' if game is already playing
+          // (reconnect case: game is still in progress)
+        } else {
+          // First join — create minimal game object
+          currentGame.value = {
+            id: message.game_id,
+            red_player: null,
+            black_player: null,
+            status: 'waiting',
+            result: null,
+            end_reason: null,
+            fen: message.fen,
+            time_control: null,
+            move_time_limit: null,
+            byoyomi: null,
+            red_time: null,
+            black_time: null,
+            created_at: '',
+          };
+        }
         startLocalTimer();
         break;
       case 'opponent_joined':
@@ -192,6 +202,13 @@ export const useGameStore = defineStore('game', () => {
 
   // Register WS message listener
   wsService.onMessage(handleWsMessage);
+
+  // On WS reconnect, re-join the current game to sync state
+  wsService.onReconnect(() => {
+    if (currentGame.value && currentGame.value.status !== 'finished') {
+      wsService.joinGame(currentGame.value.id);
+    }
+  });
 
   return {
     currentGame, playerColor, isSpectator, selectedSquare, validMoves,
