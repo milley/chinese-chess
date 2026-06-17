@@ -112,10 +112,16 @@ impl GameRoom {
         match color {
             chess_engine::Color::Red => {
                 let mut player = self.red_player.write().await;
+                if player.is_some() {
+                    return Err("Red player slot is already occupied".into());
+                }
                 *player = Some(client);
             }
             chess_engine::Color::Black => {
                 let mut player = self.black_player.write().await;
+                if player.is_some() {
+                    return Err("Black player slot is already occupied".into());
+                }
                 *player = Some(client);
             }
         }
@@ -236,18 +242,27 @@ impl GameRoom {
     }
 
     /// 认输
-    pub async fn resign(&self, user_id: Uuid) -> Result<(), String> {
-        let mut state = self.game_state.write().await;
+    /// Returns (game_id, result_str, reason_str) so the caller can persist to DB.
+    pub async fn resign(&self, user_id: Uuid) -> Result<(String, String, String), String> {
+        // Check if game is already over before resigning
+        {
+            let state = self.game_state.read().await;
+            if state.is_game_over() {
+                return Err("Game is already over".into());
+            }
+        }
 
         let color = self.player_color(user_id).await?;
-
-        state.resign(color);
-        drop(state);
 
         let (result_str, reason_str) = match color {
             chess_engine::Color::Red => ("black_win", "resign"),
             chess_engine::Color::Black => ("red_win", "resign"),
         };
+
+        {
+            let mut state = self.game_state.write().await;
+            state.resign(color);
+        }
 
         let msg = ServerMessage::GameOver {
             game_id: self.game_id.to_string(),
@@ -256,7 +271,7 @@ impl GameRoom {
         };
         self.broadcast(&msg).await;
 
-        Ok(())
+        Ok((self.game_id.to_string(), result_str.to_string(), reason_str.to_string()))
     }
 
     /// 提议和棋
@@ -281,7 +296,9 @@ impl GameRoom {
     }
 
     /// 响应和棋提议
-    pub async fn respond_draw(&self, user_id: Uuid, accept: bool) -> Result<(), String> {
+    /// Returns Some((game_id, result_str, reason_str)) if draw accepted (game ended),
+    /// None if draw rejected or no game end.
+    pub async fn respond_draw(&self, user_id: Uuid, accept: bool) -> Result<Option<(String, String, String)>, String> {
         let color = self.player_color(user_id).await?;
 
         // 检查是否有待处理的和棋提议
@@ -294,6 +311,11 @@ impl GameRoom {
         }
 
         if accept {
+            // Check if game is already over before accepting draw
+            if self.game_state.read().await.is_game_over() {
+                return Err("Game is already over".into());
+            }
+
             // 清除和棋提议
             *self.draw_offer.write().await = None;
 
@@ -312,6 +334,8 @@ impl GameRoom {
                 reason: "draw_agreement".to_string(),
             };
             self.broadcast(&over_msg).await;
+
+            Ok(Some((self.game_id.to_string(), "draw".to_string(), "draw_agreement".to_string())))
         } else {
             // 拒绝和棋，清除提议
             *self.draw_offer.write().await = None;
@@ -321,20 +345,21 @@ impl GameRoom {
                 accepted: false,
             };
             self.broadcast(&msg).await;
-        }
 
-        Ok(())
+            Ok(None)
+        }
     }
 
     /// 玩家离开对局 (对局中离开判负)
-    pub async fn leave(&self, user_id: Uuid) -> Result<(), String> {
-        let state = self.game_state.read().await;
-        if state.is_game_over() {
+    /// Returns Some((game_id, result_str, reason_str)) if game ended by resignation,
+    /// None if game was already over or player was just removed.
+    pub async fn leave(&self, user_id: Uuid) -> Result<Option<(String, String, String)>, String> {
+        let is_over = self.game_state.read().await.is_game_over();
+        if is_over {
             // 对局已结束，只需移除玩家
             self.remove_player(user_id).await;
-            return Ok(());
+            return Ok(None);
         }
-        drop(state);
 
         // 对局中离开 = 认输
         let color = self.player_color(user_id).await?;
@@ -353,7 +378,7 @@ impl GameRoom {
         };
         self.broadcast(&msg).await;
 
-        Ok(())
+        Ok(Some((self.game_id.to_string(), result_str.to_string(), reason_str.to_string())))
     }
 
     /// 客户端断连处理
@@ -379,22 +404,19 @@ impl GameRoom {
         }
     }
 
-    /// 从房间移除玩家
+    /// 从房间移除玩家 (single write lock to avoid TOCTOU)
     async fn remove_player(&self, user_id: Uuid) {
-        {
-            let red = self.red_player.read().await;
-            if red.as_ref().map(|c| c.user_id) == Some(user_id) {
-                drop(red);
-                *self.red_player.write().await = None;
-                return;
-            }
+        // Use write locks from the start to avoid TOCTOU between read and write
+        let mut red = self.red_player.write().await;
+        if red.as_ref().map(|c| c.user_id) == Some(user_id) {
+            *red = None;
+            return;
         }
-        {
-            let black = self.black_player.read().await;
-            if black.as_ref().map(|c| c.user_id) == Some(user_id) {
-                drop(black);
-                *self.black_player.write().await = None;
-            }
+        drop(red);
+
+        let mut black = self.black_player.write().await;
+        if black.as_ref().map(|c| c.user_id) == Some(user_id) {
+            *black = None;
         }
     }
 

@@ -191,7 +191,23 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             if let Ok(gid) = Uuid::parse_str(&game_id) {
                                 let room = state.room_manager.get_or_create_room(gid).await;
                                 if let Ok(room) = room {
-                                    room.leave(*user_id).await.ok();
+                                    if let Ok(Some((_, result_str, reason_str))) = room.leave(*user_id).await {
+                                        // Game ended by resignation — persist to DB with Elo
+                                        let game = state.game_repo.find_by_id(gid).await.ok().flatten();
+                                        if let Some(game) = game {
+                                            let fen = room.fen().await;
+                                            let _ = crate::services::elo_service::finish_game_with_elo(
+                                                &state.game_repo,
+                                                &state.user_repo,
+                                                gid,
+                                                &game,
+                                                &result_str,
+                                                &reason_str,
+                                                &fen,
+                                                "[]",
+                                            ).await;
+                                        }
+                                    }
                                 }
                                 current_game_id = None;
                             }
@@ -202,7 +218,23 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             if let Ok(gid) = Uuid::parse_str(&game_id) {
                                 let room = state.room_manager.get_or_create_room(gid).await;
                                 if let Ok(room) = room {
-                                    room.resign(*user_id).await.ok();
+                                    if let Ok((_, result_str, reason_str)) = room.resign(*user_id).await {
+                                        // Game ended by resignation — persist to DB with Elo
+                                        let game = state.game_repo.find_by_id(gid).await.ok().flatten();
+                                        if let Some(game) = game {
+                                            let fen = room.fen().await;
+                                            let _ = crate::services::elo_service::finish_game_with_elo(
+                                                &state.game_repo,
+                                                &state.user_repo,
+                                                gid,
+                                                &game,
+                                                &result_str,
+                                                &reason_str,
+                                                &fen,
+                                                "[]",
+                                            ).await;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -225,9 +257,31 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             if let Ok(gid) = Uuid::parse_str(&game_id) {
                                 let room = state.room_manager.get_or_create_room(gid).await;
                                 if let Ok(room) = room {
-                                    if let Err(e) = room.respond_draw(*user_id, accept).await {
-                                        let msg = ServerMessage::Error { message: e };
-                                        tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                    match room.respond_draw(*user_id, accept).await {
+                                        Ok(Some((_, result_str, reason_str))) => {
+                                            // Draw accepted — game ended, persist to DB with Elo
+                                            let game = state.game_repo.find_by_id(gid).await.ok().flatten();
+                                            if let Some(game) = game {
+                                                let fen = room.fen().await;
+                                                let _ = crate::services::elo_service::finish_game_with_elo(
+                                                    &state.game_repo,
+                                                    &state.user_repo,
+                                                    gid,
+                                                    &game,
+                                                    &result_str,
+                                                    &reason_str,
+                                                    &fen,
+                                                    "[]",
+                                                ).await;
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            // Draw rejected — nothing to persist
+                                        }
+                                        Err(e) => {
+                                            let msg = ServerMessage::Error { message: e };
+                                            tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                        }
                                     }
                                 }
                             }

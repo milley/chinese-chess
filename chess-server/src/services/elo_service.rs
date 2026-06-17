@@ -6,6 +6,7 @@ use crate::db::repositories::user_repo::UserRepository;
 use crate::error::AppError;
 
 /// 对局结束处理: 更新结果、Elo 评分、胜负平统计
+/// Returns Ok(true) if game was finished (first call), Ok(false) if already finished (duplicate call).
 pub async fn finish_game_with_elo(
     game_repo: &GameRepository,
     user_repo: &UserRepository,
@@ -15,9 +16,13 @@ pub async fn finish_game_with_elo(
     reason_str: &str,
     fen: &str,
     move_history: &str,
-) -> Result<(), AppError> {
-    // 更新对局结果
-    game_repo.finish_game(game_id, result_str, reason_str, fen, move_history).await?;
+) -> Result<bool, AppError> {
+    // 更新对局结果 (idempotent: WHERE status != 'finished')
+    let finished = game_repo.finish_game(game_id, result_str, reason_str, fen, move_history).await?;
+    if finished.is_none() {
+        // Game was already finished by another concurrent call — skip Elo update
+        return Ok(false);
+    }
 
     // 更新 Elo 评分
     if let (Some(red_id), Some(black_id)) = (game.red_player_id, game.black_player_id) {
@@ -40,5 +45,5 @@ pub async fn finish_game_with_elo(
         }
     }
 
-    Ok(())
+    Ok(true)
 }

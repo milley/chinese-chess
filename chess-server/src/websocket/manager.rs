@@ -26,12 +26,21 @@ impl RoomManager {
     }
 
     /// 获取或创建房间 (懒加载，从数据库恢复状态)
+    /// Uses write lock from the start to prevent TOCTOU duplicate room creation.
     pub async fn get_or_create_room(&self, game_id: Uuid) -> Result<Arc<GameRoom>, String> {
-        let rooms = self.rooms.read().await;
+        // Fast path: check with read lock first
+        {
+            let rooms = self.rooms.read().await;
+            if let Some(room) = rooms.get(&game_id) {
+                return Ok(room.clone());
+            }
+        }
+
+        // Slow path: acquire write lock and double-check (like a mutex guard pattern)
+        let mut rooms = self.rooms.write().await;
         if let Some(room) = rooms.get(&game_id) {
             return Ok(room.clone());
         }
-        drop(rooms);
 
         // 从数据库加载
         let game = self.game_repo.find_by_id(game_id).await
@@ -54,7 +63,6 @@ impl RoomManager {
             room.activate_time().await;
         }
 
-        let mut rooms = self.rooms.write().await;
         rooms.insert(game_id, room.clone());
 
         Ok(room)
@@ -80,13 +88,13 @@ impl RoomManager {
     }
 
     /// 响应和棋提议
-    pub async fn respond_draw(&self, game_id: Uuid, user_id: Uuid, accept: bool) -> Result<(), String> {
+    pub async fn respond_draw(&self, game_id: Uuid, user_id: Uuid, accept: bool) -> Result<Option<(String, String, String)>, String> {
         let room = self.get_or_create_room(game_id).await?;
         room.respond_draw(user_id, accept).await
     }
 
     /// 离开对局
-    pub async fn leave(&self, game_id: Uuid, user_id: Uuid) -> Result<(), String> {
+    pub async fn leave(&self, game_id: Uuid, user_id: Uuid) -> Result<Option<(String, String, String)>, String> {
         let room = self.get_or_create_room(game_id).await?;
         room.leave(user_id).await
     }
@@ -119,6 +127,12 @@ impl RoomManager {
                     let tick_result = room.tick_time().await;
                     match tick_result {
                         Some(chess_engine::TickResult::Timeout(color)) => {
+                            // Double-check: another handler (resign/move/draw) may have ended the game
+                            // between the tick and this point
+                            if room.is_game_over().await {
+                                continue;
+                            }
+
                             // End the game
                             room.timeout(color).await;
                             let fen = room.fen().await;
@@ -128,21 +142,24 @@ impl RoomManager {
                                 chess_engine::Color::Black => ("red_win", "timeout"),
                             };
 
-                            // Update DB
-                            let _ = game_repo.finish_game(
+                            // Update DB (idempotent: WHERE status != 'finished')
+                            let result = game_repo.finish_game(
                                 game_id, result_str, reason_str, &fen, "[]"
                             ).await;
 
-                            // Persist final time state
-                            room.persist_time().await;
+                            // Only broadcast GameOver if we were the first to finish the game
+                            if let Ok(Some(_)) = result {
+                                // Persist final time state
+                                room.persist_time().await;
 
-                            // Broadcast GameOver
-                            let msg = ServerMessage::GameOver {
-                                game_id: game_id.to_string(),
-                                result: result_str.to_string(),
-                                reason: reason_str.to_string(),
-                            };
-                            room.broadcast(&msg).await;
+                                // Broadcast GameOver
+                                let msg = ServerMessage::GameOver {
+                                    game_id: game_id.to_string(),
+                                    result: result_str.to_string(),
+                                    reason: reason_str.to_string(),
+                                };
+                                room.broadcast(&msg).await;
+                            }
                         }
                         Some(chess_engine::TickResult::Ok { .. }) => {
                             // Broadcast TimeUpdate to both players
