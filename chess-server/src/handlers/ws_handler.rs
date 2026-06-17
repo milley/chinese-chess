@@ -132,6 +132,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     // Determine color from DB
                                     let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                     if let Some(game) = game {
+                                        let was_waiting = game.status == "waiting";
                                         let color = if game.red_player_id == Some(*user_id) {
                                             chess_engine::Color::Red
                                         } else if game.black_player_id == Some(*user_id) {
@@ -141,6 +142,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         };
                                         let client = crate::websocket::client::Client::new(*user_id, username.clone(), tx.clone());
                                         room.join(client, color).await.ok();
+
+                                        // Activate time control when game transitions to playing
+                                        if was_waiting {
+                                            room.activate_time().await;
+                                        }
 
                                         // Send JoinedGame back to the joining player
                                         let fen = room.fen().await;

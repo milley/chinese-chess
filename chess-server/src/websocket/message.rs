@@ -49,6 +49,8 @@ pub enum ServerMessage {
         to: String,
         fen: String,
         is_check: bool,
+        red_time: Option<i64>,
+        black_time: Option<i64>,
     },
     #[serde(rename = "illegal_move")]
     IllegalMove {
@@ -80,6 +82,8 @@ pub enum ServerMessage {
         red_time: i64,
         black_time: i64,
         active_color: String,
+        red_in_byoyomi: bool,
+        black_in_byoyomi: bool,
     },
     #[serde(rename = "pong")]
     Pong,
@@ -137,6 +141,8 @@ mod tests {
             to: "a1".into(),
             fen: "test".into(),
             is_check: false,
+            red_time: Some(600),
+            black_time: Some(580),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"move_made\""));

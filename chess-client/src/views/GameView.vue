@@ -29,11 +29,17 @@
         <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
           <div style="text-align: center;">
             <div style="font-size: 12px; color: #999;">红方</div>
-            <div style="font-size: 24px; font-weight: bold; color: #d4380d;">{{ formatTime(gameStore.redTime) }}</div>
+            <div style="font-size: 24px; font-weight: bold;" :style="{ color: gameStore.redInByoyomi ? '#faad14' : '#d4380d' }">
+              {{ formatTime(gameStore.redTime) }}
+              <span v-if="gameStore.redInByoyomi" style="font-size: 12px; font-weight: normal;">读秒</span>
+            </div>
           </div>
           <div style="text-align: center;">
             <div style="font-size: 12px; color: #999;">黑方</div>
-            <div style="font-size: 24px; font-weight: bold;">{{ formatTime(gameStore.blackTime) }}</div>
+            <div style="font-size: 24px; font-weight: bold;" :style="{ color: gameStore.blackInByoyomi ? '#faad14' : '#000' }">
+              {{ formatTime(gameStore.blackTime) }}
+              <span v-if="gameStore.blackInByoyomi" style="font-size: 12px; font-weight: normal;">读秒</span>
+            </div>
           </div>
         </div>
 

@@ -25,7 +25,7 @@ impl RoomManager {
         }
     }
 
-    /// 获取或创建房间 (懒加载)
+    /// 获取或创建房间 (懒加载，从数据库恢复状态)
     pub async fn get_or_create_room(&self, game_id: Uuid) -> Result<Arc<GameRoom>, String> {
         let rooms = self.rooms.read().await;
         if let Some(room) = rooms.get(&game_id) {
@@ -38,7 +38,21 @@ impl RoomManager {
             .map_err(|e| format!("DB error: {}", e))?
             .ok_or("Game not found".to_string())?;
 
-        let room = Arc::new(GameRoom::new(game_id, &game.fen, self.game_repo.clone()));
+        let room = Arc::new(GameRoom::new_with_state(
+            game_id,
+            &game.fen,
+            self.game_repo.clone(),
+            game.time_control,
+            game.move_time_limit,
+            game.byoyomi,
+            game.red_time,
+            game.black_time,
+        ));
+
+        // If game is already playing, activate time control
+        if game.status == "playing" {
+            room.activate_time().await;
+        }
 
         let mut rooms = self.rooms.write().await;
         rooms.insert(game_id, room.clone());
@@ -84,7 +98,7 @@ impl RoomManager {
         }
     }
 
-    /// 启动超时检查器
+    /// 启动超时检查器 (每秒 tick 一次)
     pub fn start_timeout_checker(&self) {
         let rooms = self.rooms.clone();
         let game_repo = self.game_repo.clone();
@@ -94,40 +108,62 @@ impl RoomManager {
                 interval.tick().await;
                 let rooms_guard = rooms.read().await;
                 for (_, room) in rooms_guard.iter() {
-                    // Check timeout: get game state info from the room
-                    let fen = room.fen().await;
                     let game_id = room.game_id();
-                    // Load game from DB for time control info
-                    if let Ok(Some(game)) = game_repo.find_by_id(game_id).await {
-                        if game.status != "playing" { continue; }
 
-                        let move_start = room.move_start_time().await;
-                        let elapsed = move_start.elapsed().as_secs() as i32;
+                    // Skip if game is already over
+                    if room.is_game_over().await {
+                        continue;
+                    }
 
-                        // Check move time limit
-                        if let Some(time_limit) = game.move_time_limit {
-                            if elapsed >= time_limit {
-                                // Timeout: determine who lost
-                                let color = room.current_side().await;
-                                let (result_str, reason_str) = match color {
-                                    chess_engine::Color::Red => ("black_win", "timeout"),
-                                    chess_engine::Color::Black => ("red_win", "timeout"),
-                                };
+                    // Tick the time control
+                    let tick_result = room.tick_time().await;
+                    match tick_result {
+                        Some(chess_engine::TickResult::Timeout(color)) => {
+                            // End the game
+                            room.timeout(color).await;
+                            let fen = room.fen().await;
 
-                                // End the game in the room
-                                room.timeout(color).await;
+                            let (result_str, reason_str) = match color {
+                                chess_engine::Color::Red => ("black_win", "timeout"),
+                                chess_engine::Color::Black => ("red_win", "timeout"),
+                            };
 
-                                // Update DB
-                                let _ = game_repo.finish_game(game_id, result_str, reason_str, &fen, "[]").await;
+                            // Update DB
+                            let _ = game_repo.finish_game(
+                                game_id, result_str, reason_str, &fen, "[]"
+                            ).await;
 
-                                // Broadcast
-                                let msg = ServerMessage::GameOver {
-                                    game_id: game_id.to_string(),
-                                    result: result_str.to_string(),
-                                    reason: reason_str.to_string(),
-                                };
-                                room.broadcast(&msg).await;
-                            }
+                            // Persist final time state
+                            room.persist_time().await;
+
+                            // Broadcast GameOver
+                            let msg = ServerMessage::GameOver {
+                                game_id: game_id.to_string(),
+                                result: result_str.to_string(),
+                                reason: reason_str.to_string(),
+                            };
+                            room.broadcast(&msg).await;
+                        }
+                        Some(chess_engine::TickResult::Ok { .. }) => {
+                            // Broadcast TimeUpdate to both players
+                            let (red_time, black_time, active_color, red_in_byoyomi, black_in_byoyomi) =
+                                room.time_state().await;
+
+                            let msg = ServerMessage::TimeUpdate {
+                                game_id: game_id.to_string(),
+                                red_time: red_time as i64,
+                                black_time: black_time as i64,
+                                active_color,
+                                red_in_byoyomi,
+                                black_in_byoyomi,
+                            };
+                            room.broadcast(&msg).await;
+
+                            // Persist time to DB periodically (every second for accuracy)
+                            room.persist_time().await;
+                        }
+                        None => {
+                            // No time control configured for this room
                         }
                     }
                 }

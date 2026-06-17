@@ -31,6 +31,8 @@
           <div>
             <span style="font-weight: 500;">{{ game.red_player?.username || '?' }} vs {{ game.black_player?.username || '?' }}</span>
             <span style="margin-left: 8px; font-size: 12px; color: #999;">{{ game.status }}</span>
+            <span v-if="game.time_control" style="margin-left: 8px; font-size: 12px; color: #666;">{{ Math.floor(game.time_control / 60) }}分</span>
+            <span v-if="game.byoyomi" style="margin-left: 4px; font-size: 12px; color: #666;">+{{ game.byoyomi }}秒读秒</span>
           </div>
           <div>
             <button v-if="game.status === 'waiting'" class="btn btn-primary" @click="joinGame(game.id)">加入</button>
@@ -53,6 +55,14 @@
           <div class="form-group">
             <label>局时 (分钟)</label>
             <input v-model.number="createTimeControl" type="number" min="1" max="60" placeholder="留空不限时" />
+          </div>
+          <div class="form-group">
+            <label>步时限 (秒)</label>
+            <input v-model.number="createMoveTimeLimit" type="number" min="5" max="300" placeholder="留空不限" />
+          </div>
+          <div class="form-group">
+            <label>读秒 (秒)</label>
+            <input v-model.number="createByoyomi" type="number" min="3" max="60" placeholder="留空不读秒" />
           </div>
           <div style="display: flex; gap: 8px; margin-top: 16px;">
             <button class="btn btn-primary" style="flex: 1;" @click="handleCreate">创建</button>
@@ -81,6 +91,8 @@ const filter = ref('all');
 const showCreateDialog = ref(false);
 const createColor = ref('red');
 const createTimeControl = ref<number | null>(null);
+const createMoveTimeLimit = ref<number | null>(null);
+const createByoyomi = ref<number | null>(null);
 
 async function loadGames() {
   try {
@@ -109,6 +121,8 @@ async function handleCreate() {
     await gameStore.createGame({
       player_color: createColor.value,
       time_control: createTimeControl.value ? createTimeControl.value * 60 : undefined,
+      move_time_limit: createMoveTimeLimit.value || undefined,
+      byoyomi: createByoyomi.value || undefined,
     });
     if (gameStore.currentGame) {
       router.push(`/game/${gameStore.currentGame.id}`);

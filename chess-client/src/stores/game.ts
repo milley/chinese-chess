@@ -14,6 +14,8 @@ export const useGameStore = defineStore('game', () => {
   const drawOffered = ref(false);
   const redTime = ref<number>(0);
   const blackTime = ref<number>(0);
+  const redInByoyomi = ref<boolean>(false);
+  const blackInByoyomi = ref<boolean>(false);
   const timerInterval = ref<ReturnType<typeof setInterval> | null>(null);
   const errorMessage = ref<string | null>(null);
 
@@ -125,6 +127,13 @@ export const useGameStore = defineStore('game', () => {
         if (currentGame.value) {
           currentGame.value.fen = message.fen;
           moveHistory.value.push(`${message.from}-${message.to}`);
+          // Sync time from server (authoritative)
+          if (message.red_time !== undefined && message.red_time !== null) {
+            redTime.value = message.red_time;
+          }
+          if (message.black_time !== undefined && message.black_time !== null) {
+            blackTime.value = message.black_time;
+          }
         }
         selectedSquare.value = null;
         validMoves.value = [];
@@ -137,8 +146,11 @@ export const useGameStore = defineStore('game', () => {
         }
         break;
       case 'time_update':
+        // Server-authoritative time update
         redTime.value = message.red_time;
         blackTime.value = message.black_time;
+        redInByoyomi.value = message.red_in_byoyomi;
+        blackInByoyomi.value = message.black_in_byoyomi;
         break;
       case 'draw_offered':
         drawOffered.value = true;
@@ -165,6 +177,10 @@ export const useGameStore = defineStore('game', () => {
         stopLocalTimer();
         return;
       }
+      // Local timer is for smooth display interpolation only.
+      // The server broadcasts authoritative TimeUpdate every second,
+      // which overwrites these values. This local decrement ensures
+      // the display doesn't freeze between server updates.
       const active = currentGame.value.fen.split(' ')[1] === 'w' ? 'red' : 'black';
       if (active === 'red') {
         redTime.value = Math.max(0, redTime.value - 1);
@@ -212,7 +228,8 @@ export const useGameStore = defineStore('game', () => {
 
   return {
     currentGame, playerColor, isSpectator, selectedSquare, validMoves,
-    moveHistory, drawOffered, redTime, blackTime, errorMessage, isMyTurn,
+    moveHistory, drawOffered, redTime, blackTime, redInByoyomi, blackInByoyomi,
+    errorMessage, isMyTurn,
     createGame, joinGame, loadGame, selectSquare, makeMove,
     resign, offerDraw, respondDraw,
   };

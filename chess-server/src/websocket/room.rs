@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -30,8 +29,8 @@ pub struct GameRoom {
     black_player: Arc<RwLock<Option<Client>>>,
     /// 观战者
     spectators: Arc<RwLock<Vec<Client>>>,
-    /// 当前走子方开始走棋时间
-    move_start_time: Arc<RwLock<Instant>>,
+    /// 时间控制
+    time_control: Arc<RwLock<Option<chess_engine::TimeControl>>>,
     /// 和棋请求状态
     draw_offer: Arc<RwLock<Option<chess_engine::Color>>>,
     /// 数据库仓库
@@ -39,9 +38,22 @@ pub struct GameRoom {
 }
 
 impl GameRoom {
-    pub fn new(game_id: Uuid, fen: &str, game_repo: GameRepository) -> Self {
+    pub fn new(
+        game_id: Uuid,
+        fen: &str,
+        game_repo: GameRepository,
+        time_control: Option<i32>,
+        move_time_limit: Option<i32>,
+        byoyomi: Option<i32>,
+    ) -> Self {
         let game_state = chess_engine::GameState::from_fen(fen)
             .unwrap_or_else(|_| chess_engine::GameState::new());
+
+        let tc = if time_control.is_some() || move_time_limit.is_some() || byoyomi.is_some() {
+            Some(chess_engine::TimeControl::new(time_control, move_time_limit, byoyomi))
+        } else {
+            None
+        };
 
         Self {
             game_state: Arc::new(RwLock::new(game_state)),
@@ -49,7 +61,47 @@ impl GameRoom {
             red_player: Arc::new(RwLock::new(None)),
             black_player: Arc::new(RwLock::new(None)),
             spectators: Arc::new(RwLock::new(Vec::new())),
-            move_start_time: Arc::new(RwLock::new(Instant::now())),
+            time_control: Arc::new(RwLock::new(tc)),
+            draw_offer: Arc::new(RwLock::new(None)),
+            game_repo,
+        }
+    }
+
+    /// Create a room restoring from persisted DB state (for server restart recovery).
+    pub fn new_with_state(
+        game_id: Uuid,
+        fen: &str,
+        game_repo: GameRepository,
+        time_control: Option<i32>,
+        move_time_limit: Option<i32>,
+        byoyomi: Option<i32>,
+        red_time: Option<i32>,
+        black_time: Option<i32>,
+    ) -> Self {
+        let game_state = chess_engine::GameState::from_fen(fen)
+            .unwrap_or_else(|_| chess_engine::GameState::new());
+
+        let tc = if time_control.is_some() || move_time_limit.is_some() || byoyomi.is_some() {
+            let red_remaining = red_time.unwrap_or(0);
+            let black_remaining = black_time.unwrap_or(0);
+            Some(chess_engine::TimeControl::new_with_state(
+                time_control,
+                move_time_limit,
+                byoyomi,
+                red_remaining,
+                black_remaining,
+            ))
+        } else {
+            None
+        };
+
+        Self {
+            game_state: Arc::new(RwLock::new(game_state)),
+            game_id,
+            red_player: Arc::new(RwLock::new(None)),
+            black_player: Arc::new(RwLock::new(None)),
+            spectators: Arc::new(RwLock::new(Vec::new())),
+            time_control: Arc::new(RwLock::new(tc)),
             draw_offer: Arc::new(RwLock::new(None)),
             game_repo,
         }
@@ -123,8 +175,22 @@ impl GameRoom {
 
         drop(state);
 
-        // 更新走棋开始时间
-        *self.move_start_time.write().await = Instant::now();
+        // Update time control: reset move_elapsed for the player who just moved
+        {
+            let mut tc = self.time_control.write().await;
+            if let Some(ref mut tc) = *tc {
+                tc.on_move_made(player_color);
+            }
+        }
+
+        // Get current time state for MoveMade message
+        let (red_time, black_time) = {
+            let tc = self.time_control.read().await;
+            match tc.as_ref() {
+                Some(tc) => (Some(tc.remaining(chess_engine::Color::Red) as i64), Some(tc.remaining(chess_engine::Color::Black) as i64)),
+                None => (None, None),
+            }
+        };
 
         // 广播走法
         let msg = ServerMessage::MoveMade {
@@ -133,6 +199,8 @@ impl GameRoom {
             to: to.to_string(),
             fen: fen.clone(),
             is_check,
+            red_time,
+            black_time,
         };
         self.broadcast(&msg).await;
 
@@ -147,6 +215,9 @@ impl GameRoom {
                 self.broadcast(&over_msg).await;
             }
         }
+
+        // Persist time to DB after each move
+        self.persist_time().await;
 
         // Collect move history as UCI strings
         let move_history_uci = {
@@ -382,18 +453,66 @@ impl GameRoom {
         self.game_id
     }
 
-    /// 获取走子开始时间的副本
-    pub async fn move_start_time(&self) -> Instant {
-        *self.move_start_time.read().await
-    }
-
     /// 获取当前走子方
     pub async fn current_side(&self) -> chess_engine::Color {
         self.game_state.read().await.side_to_move()
     }
 
+    /// 检查游戏是否已结束
+    pub async fn is_game_over(&self) -> bool {
+        self.game_state.read().await.is_game_over()
+    }
+
     /// 超时判负
     pub async fn timeout(&self, color: chess_engine::Color) {
         self.game_state.write().await.timeout(color);
+    }
+
+    /// 激活时间控制 (游戏开始时调用)
+    pub async fn activate_time(&self) {
+        let mut tc = self.time_control.write().await;
+        if let Some(ref mut tc) = *tc {
+            tc.activate();
+        }
+    }
+
+    /// 执行一次时间 tick (由超时检查器每秒调用)
+    /// 返回 None 表示没有时间控制
+    pub async fn tick_time(&self) -> Option<chess_engine::TickResult> {
+        let side = self.current_side().await;
+        let mut tc = self.time_control.write().await;
+        tc.as_mut().map(|tc| tc.tick(side))
+    }
+
+    /// 获取当前时间状态 (red_remaining, black_remaining, active_color, red_in_byoyomi, black_in_byoyomi)
+    pub async fn time_state(&self) -> (i32, i32, String, bool, bool) {
+        let tc = self.time_control.read().await;
+        let side = self.current_side().await;
+        match tc.as_ref() {
+            Some(tc) => {
+                let active_color = match side {
+                    chess_engine::Color::Red => "red",
+                    chess_engine::Color::Black => "black",
+                };
+                (
+                    tc.remaining(chess_engine::Color::Red),
+                    tc.remaining(chess_engine::Color::Black),
+                    active_color.to_string(),
+                    tc.phase(chess_engine::Color::Red) == chess_engine::TimePhase::Byoyomi,
+                    tc.phase(chess_engine::Color::Black) == chess_engine::TimePhase::Byoyomi,
+                )
+            }
+            None => (0, 0, "red".to_string(), false, false),
+        }
+    }
+
+    /// 将当前时间持久化到数据库
+    pub async fn persist_time(&self) {
+        let tc = self.time_control.read().await;
+        if let Some(ref tc) = *tc {
+            let red_remaining = tc.remaining(chess_engine::Color::Red);
+            let black_remaining = tc.remaining(chess_engine::Color::Black);
+            let _ = self.game_repo.update_time(self.game_id, red_remaining, black_remaining).await;
+        }
     }
 }

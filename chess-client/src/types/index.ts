@@ -167,6 +167,8 @@ export interface WsMoveMadeMessage {
   to: string;
   fen: string;
   is_check: boolean;
+  red_time?: number;
+  black_time?: number;
 }
 
 export interface WsIllegalMoveMessage {
@@ -204,6 +206,8 @@ export interface WsTimeUpdateMessage {
   red_time: number;
   black_time: number;
   active_color: string;
+  red_in_byoyomi: boolean;
+  black_in_byoyomi: boolean;
 }
 
 export interface WsPongMessage {
