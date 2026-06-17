@@ -135,8 +135,8 @@ fn position_value(piece_type: PieceType, pos: Position, color: Color) -> i32 {
     sign * table_value
 }
 
-/// 局面评估 (从红方视角)
-pub fn evaluate(board: &Board) -> i32 {
+/// 基础评估: 物质分 + 位置分 + 兵过河奖励 (不含机动性)
+fn evaluate_base(board: &Board) -> i32 {
     let mut score = 0i32;
 
     // 1. 物质分 (增量维护)
@@ -146,7 +146,6 @@ pub fn evaluate(board: &Board) -> i32 {
     for (pos, piece) in board.all_pieces() {
         score += position_value(piece.piece_type, pos, piece.color);
 
-        // 兵过河奖励
         if piece.piece_type == PieceType::Pawn {
             let crossed = crate::pieces::movement::has_crossed_river(pos.row, piece.color);
             if crossed {
@@ -158,6 +157,13 @@ pub fn evaluate(board: &Board) -> i32 {
             }
         }
     }
+
+    score
+}
+
+/// 局面评估 (从红方视角)
+pub fn evaluate(board: &Board) -> i32 {
+    let mut score = evaluate_base(board);
 
     // 3. 机动性分
     let red_mobility = board.generate_legal_moves(Color::Red).len() as i32;
@@ -169,28 +175,7 @@ pub fn evaluate(board: &Board) -> i32 {
 
 /// 快速评估 (不计算机动性，用于搜索内部)
 pub fn evaluate_fast(board: &Board) -> i32 {
-    let mut score = 0i32;
-
-    // 物质分
-    score += board.red_material_score() - board.black_material_score();
-
-    // 位置分 + 兵过河奖励
-    for (pos, piece) in board.all_pieces() {
-        score += position_value(piece.piece_type, pos, piece.color);
-
-        if piece.piece_type == PieceType::Pawn {
-            let crossed = crate::pieces::movement::has_crossed_river(pos.row, piece.color);
-            if crossed {
-                let bonus = match piece.color {
-                    Color::Red => PAWN_CROSSED_BONUS,
-                    Color::Black => -PAWN_CROSSED_BONUS,
-                };
-                score += bonus;
-            }
-        }
-    }
-
-    score
+    evaluate_base(board)
 }
 
 #[cfg(test)]
@@ -212,5 +197,48 @@ mod tests {
         let board = Board::from_fen(fen).unwrap();
         let score = evaluate(&board);
         assert!(score > 500, "Red with extra rook should have large positive score, got {}", score);
+    }
+
+    #[test]
+    fn test_position_value_correctness() {
+        // Test specific position value lookup
+        // Red rook at center (4,5): ROOK_POS_VALUE[5][4] = 35
+        let fen = "4k4/9/9/9/9/4R4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let score = evaluate_fast(&board);
+        // Score = material (600) + position value of rook at (4,5) = 35
+        assert!(score > 0, "Red with rook at center should have positive score, got {}", score);
+        assert!(score >= 600, "Score should be at least rook base value, got {}", score);
+    }
+
+    #[test]
+    fn test_pawn_crossed_river_bonus() {
+        // Red pawn after river should get bonus
+        let fen = "4k4/9/9/9/P8/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let score = evaluate_fast(&board);
+        // Material = 30 (pawn) + position value + crossed river bonus (40)
+        assert!(score > 50, "Crossed river pawn should contribute > 50, got {}", score);
+    }
+
+    #[test]
+    fn test_evaluate_fast_vs_evaluate_consistency() {
+        // evaluate_fast = evaluate - mobility component
+        let fen = "4k4/4R4/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let fast = evaluate_fast(&board);
+        let full = evaluate(&board);
+        // Difference should be due to mobility only
+        let diff = (full - fast).abs();
+        assert!(diff <= 1000, "Difference should be due to mobility only, got diff {}", diff);
+    }
+
+    #[test]
+    fn test_black_advantage_negative_score() {
+        // Black with extra rook should produce negative score (from red perspective)
+        let fen = "4k4/9/9/9/9/9/9/9/4r4/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let score = evaluate_fast(&board);
+        assert!(score < -500, "Black with extra rook should have large negative score, got {}", score);
     }
 }

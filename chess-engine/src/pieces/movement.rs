@@ -1,5 +1,5 @@
 use crate::pieces::Color;
-use crate::board::Position;
+use crate::board::{Board, Position};
 
 /// 九宫范围
 /// 红方九宫: col 3-5, row 7-9
@@ -29,6 +29,94 @@ pub fn has_crossed_river(row: u8, color: Color) -> bool {
     match color {
         Color::Red => row <= 4,
         Color::Black => row >= 5,
+    }
+}
+
+/// 检查两点之间的直线路径是否畅通 (不含起点和终点)
+/// 两点必须在同一行或同一列
+pub fn is_line_clear(board: &Board, from: Position, to: Position) -> bool {
+    if from.col == to.col {
+        let min_row = from.row.min(to.row);
+        let max_row = from.row.max(to.row);
+        for row in (min_row + 1)..max_row {
+            if board.piece_at(Position::new(from.col, row)).is_some() {
+                return false;
+            }
+        }
+    } else if from.row == to.row {
+        let min_col = from.col.min(to.col);
+        let max_col = from.col.max(to.col);
+        for col in (min_col + 1)..max_col {
+            if board.piece_at(Position::new(col, from.row)).is_some() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// 计算两点之间直线路径上的棋子数 (不含起点和终点)
+/// 两点必须在同一行或同一列
+pub fn count_pieces_on_line(board: &Board, from: Position, to: Position) -> usize {
+    let mut count = 0;
+    if from.col == to.col {
+        let min_row = from.row.min(to.row);
+        let max_row = from.row.max(to.row);
+        for row in (min_row + 1)..max_row {
+            if board.piece_at(Position::new(from.col, row)).is_some() {
+                count += 1;
+            }
+        }
+    } else if from.row == to.row {
+        let min_col = from.col.min(to.col);
+        let max_col = from.col.max(to.col);
+        for col in (min_col + 1)..max_col {
+            if board.piece_at(Position::new(col, from.row)).is_some() {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// 检查马是否能攻击到目标位置 (包含蹩腿检测)
+/// 复用 knight_leg_positions 进行统一的蹩腿检测
+pub fn can_knight_reach(board: &Board, from: Position, to: Position) -> bool {
+    let dc = (to.col as i8 - from.col as i8).abs();
+    let dr = (to.row as i8 - from.row as i8).abs();
+
+    if !((dc == 1 && dr == 2) || (dc == 2 && dr == 1)) {
+        return false;
+    }
+
+    // 使用 knight_leg_positions 查找匹配的 (腿, 目标) 对
+    let legs = knight_leg_positions(from);
+    for (leg, target) in legs {
+        if target == to && leg.is_valid() {
+            return board.piece_at(leg).is_none();
+        }
+    }
+    false
+}
+
+/// 兵/卒是否能攻击到目标位置
+pub fn can_pawn_attack(from: Position, target: Position, color: Color) -> bool {
+    let dc = (target.col as i8 - from.col as i8).abs();
+    let dr = (target.row as i8 - from.row as i8).abs();
+
+    if dc + dr != 1 {
+        return false; // 只能走一步
+    }
+
+    let crossed = has_crossed_river(from.row, color);
+    let forward = pawn_forward_offset(color);
+
+    if dc == 1 {
+        // 横向移动，必须已过河
+        crossed && from.row == target.row
+    } else {
+        // 纵向移动，必须前进
+        (target.row as i8 - from.row as i8) == forward
     }
 }
 
@@ -99,5 +187,190 @@ pub fn pawn_forward_offset(color: Color) -> i8 {
     match color {
         Color::Red => -1, // 红方向上 (row 递减)
         Color::Black => 1, // 黑方向下 (row 递增)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::Position;
+
+    // === is_in_palace tests ===
+
+    #[test]
+    fn test_red_palace_interior() {
+        // Red palace: col 3-5, row 7-9
+        for col in 3..=5u8 {
+            for row in 7..=9u8 {
+                assert!(is_in_palace(Position::new(col, row), Color::Red),
+                    "Red palace should contain ({},{})", col, row);
+            }
+        }
+    }
+
+    #[test]
+    fn test_red_palace_exterior() {
+        // Outside red palace
+        assert!(!is_in_palace(Position::new(2, 8), Color::Red), "col 2 is outside palace");
+        assert!(!is_in_palace(Position::new(6, 8), Color::Red), "col 6 is outside palace");
+        assert!(!is_in_palace(Position::new(4, 6), Color::Red), "row 6 is outside palace");
+        assert!(!is_in_palace(Position::new(4, 0), Color::Red), "row 0 is outside palace");
+    }
+
+    #[test]
+    fn test_black_palace_interior() {
+        // Black palace: col 3-5, row 0-2
+        for col in 3..=5u8 {
+            for row in 0..=2u8 {
+                assert!(is_in_palace(Position::new(col, row), Color::Black),
+                    "Black palace should contain ({},{})", col, row);
+            }
+        }
+    }
+
+    #[test]
+    fn test_black_palace_exterior() {
+        assert!(!is_in_palace(Position::new(2, 1), Color::Black), "col 2 is outside palace");
+        assert!(!is_in_palace(Position::new(6, 1), Color::Black), "col 6 is outside palace");
+        assert!(!is_in_palace(Position::new(4, 3), Color::Black), "row 3 is outside palace");
+        assert!(!is_in_palace(Position::new(4, 9), Color::Black), "row 9 is outside palace");
+    }
+
+    // === is_on_own_side tests ===
+
+    #[test]
+    fn test_red_own_side() {
+        // Red side: row 5-9
+        assert!(is_on_own_side(5, Color::Red), "row 5 is red side");
+        assert!(is_on_own_side(9, Color::Red), "row 9 is red side");
+        assert!(!is_on_own_side(4, Color::Red), "row 4 is not red side");
+        assert!(!is_on_own_side(0, Color::Red), "row 0 is not red side");
+    }
+
+    #[test]
+    fn test_black_own_side() {
+        // Black side: row 0-4
+        assert!(is_on_own_side(0, Color::Black), "row 0 is black side");
+        assert!(is_on_own_side(4, Color::Black), "row 4 is black side");
+        assert!(!is_on_own_side(5, Color::Black), "row 5 is not black side");
+        assert!(!is_on_own_side(9, Color::Black), "row 9 is not black side");
+    }
+
+    // === has_crossed_river tests ===
+
+    #[test]
+    fn test_red_crossed_river() {
+        // Red crossed: row <= 4
+        assert!(has_crossed_river(0, Color::Red), "row 0 is crossed for red");
+        assert!(has_crossed_river(4, Color::Red), "row 4 is crossed for red");
+        assert!(!has_crossed_river(5, Color::Red), "row 5 is not crossed for red");
+        assert!(!has_crossed_river(9, Color::Red), "row 9 is not crossed for red");
+    }
+
+    #[test]
+    fn test_black_crossed_river() {
+        // Black crossed: row >= 5
+        assert!(has_crossed_river(5, Color::Black), "row 5 is crossed for black");
+        assert!(has_crossed_river(9, Color::Black), "row 9 is crossed for black");
+        assert!(!has_crossed_river(4, Color::Black), "row 4 is not crossed for black");
+        assert!(!has_crossed_river(0, Color::Black), "row 0 is not crossed for black");
+    }
+
+    // === knight_leg_positions tests ===
+
+    #[test]
+    fn test_knight_leg_positions_center() {
+        // Knight at e5 (4,5) - center of board
+        let pos = Position::new(4, 5);
+        let legs = knight_leg_positions(pos);
+
+        // Verify all 8 directions produce valid leg/target pairs
+        // (leg, target) where leg is the blocking square and target is the destination
+        let expected: [(Position, Position); 8] = [
+            // (leg, target)
+            (Position::new(4, 4), Position::new(3, 3)), // up-left
+            (Position::new(4, 4), Position::new(5, 3)), // up-right
+            (Position::new(4, 6), Position::new(3, 7)), // down-left
+            (Position::new(4, 6), Position::new(5, 7)), // down-right
+            (Position::new(3, 5), Position::new(2, 4)), // left-up
+            (Position::new(3, 5), Position::new(2, 6)), // left-down
+            (Position::new(5, 5), Position::new(6, 4)), // right-up
+            (Position::new(5, 5), Position::new(6, 6)), // right-down
+        ];
+
+        for i in 0..8 {
+            assert!(legs.contains(&expected[i]),
+                "Knight at (4,5) should have leg/target pair {:?}, got {:?}", expected[i], legs[i]);
+        }
+    }
+
+    #[test]
+    fn test_knight_leg_positions_corner() {
+        // Knight at a0 (0,0) - corner, some targets will be off-board
+        let pos = Position::new(0, 0);
+        let legs = knight_leg_positions(pos);
+        // Should still return 8 pairs (some with invalid positions)
+        assert_eq!(legs.len(), 8);
+        // Verify at least the valid ones: leg (1,0) -> target (2,1), leg (0,1) -> target (1,2)
+        let valid_targets: Vec<Position> = legs.iter()
+            .filter(|(_, t)| t.is_valid())
+            .map(|(_, t)| *t)
+            .collect();
+        assert!(valid_targets.contains(&Position::new(2, 1)), "Knight at a0 can reach c1");
+        assert!(valid_targets.contains(&Position::new(1, 2)), "Knight at a0 can reach b2");
+    }
+
+    // === bishop_eye_and_target tests ===
+
+    #[test]
+    fn test_bishop_eye_and_target_center() {
+        // Bishop at e5 (4,5) - center of own side for red
+        let pos = Position::new(4, 5);
+        let eyes = bishop_eye_and_target(pos);
+
+        let expected: [(Position, Position); 4] = [
+            (Position::new(3, 4), Position::new(2, 3)), // left-up
+            (Position::new(5, 4), Position::new(6, 3)), // right-up
+            (Position::new(3, 6), Position::new(2, 7)), // left-down
+            (Position::new(5, 6), Position::new(6, 7)), // right-down
+        ];
+
+        for i in 0..4 {
+            assert!(eyes.contains(&expected[i]),
+                "Bishop at (4,5) should have eye/target pair {:?}", expected[i]);
+        }
+    }
+
+    #[test]
+    fn test_bishop_eye_and_target_all_four_directions() {
+        // Bishop at c7 (2,7)
+        let pos = Position::new(2, 7);
+        let eyes = bishop_eye_and_target(pos);
+        assert_eq!(eyes.len(), 4);
+
+        // Eye positions should be diagonally adjacent
+        for (eye, target) in &eyes {
+            let dc = (eye.col as i8 - pos.col as i8).abs();
+            let dr = (eye.row as i8 - pos.row as i8).abs();
+            assert_eq!(dc, 1, "Eye should be 1 col away");
+            assert_eq!(dr, 1, "Eye should be 1 row away");
+
+            let tdc = (target.col as i8 - pos.col as i8).abs();
+            let tdr = (target.row as i8 - pos.row as i8).abs();
+            assert_eq!(tdc, 2, "Target should be 2 cols away");
+            assert_eq!(tdr, 2, "Target should be 2 rows away");
+        }
+    }
+
+    // === pawn_forward_offset tests ===
+
+    #[test]
+    fn test_pawn_forward_offset_red() {
+        assert_eq!(pawn_forward_offset(Color::Red), -1, "Red pawns move upward (row decreases)");
+    }
+
+    #[test]
+    fn test_pawn_forward_offset_black() {
+        assert_eq!(pawn_forward_offset(Color::Black), 1, "Black pawns move downward (row increases)");
     }
 }

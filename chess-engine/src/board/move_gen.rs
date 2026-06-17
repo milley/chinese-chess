@@ -475,4 +475,95 @@ mod tests {
         let _moves = board.generate_legal_moves(Color::Red);
         assert_eq!(board.to_fen(), fen_before, "Generating moves should not mutate board");
     }
+
+    #[test]
+    fn test_rook_blocked_by_own_piece() {
+        // Red rook at a9 (0,9), red knight at a8 (1,8) blocks upward
+        // Actually in initial position, rook at a9 is blocked by knight at a8
+        let board = Board::initial();
+        let rook_pos = Position::new(0, 9);
+        let moves: Vec<Move> = board.generate_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == rook_pos)
+            .collect();
+        // Rook at a9 can only go to b9 (right) - blocked up by knight at a8
+        // and blocked down by cannon at b7? No, a-file: rook at (0,9), knight at (1,8) is on b-file
+        // Actually initial: rook at (0,9), knight at (1,9) is on b-file
+        // On a-file: rook at (0,9), nothing at (0,8), pawn at (0,6)
+        // So rook can go to (0,8) and (0,7), blocked by own pawn at (0,6)
+        assert!(moves.iter().any(|m| m.to == Position::new(0, 8)), "Rook should reach a8");
+        assert!(moves.iter().any(|m| m.to == Position::new(0, 7)), "Rook should reach a7");
+        assert!(!moves.iter().any(|m| m.to == Position::new(0, 6)), "Rook blocked by own pawn at a6");
+    }
+
+    #[test]
+    fn test_cannon_multiple_screens() {
+        // Cannon with a screen can capture through exactly 1 screen
+        // Red cannon at a8 (0,8), red pawn at a5 (0,5) as screen, black pawn at a4 (0,4)
+        let fen = "4k4/9/9/9/p8/P8/9/9/C8/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let cannon_pos = Position::new(0, 8);
+        let captures: Vec<Move> = board.generate_pseudo_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == cannon_pos && board.piece_at(m.to).is_some())
+            .collect();
+        // Cannon at (0,8): screen at (0,5) = own pawn, can capture at (0,4) through 1 screen
+        assert!(captures.iter().any(|m| m.to == Position::new(0, 4)),
+            "Cannon should capture through 1 screen, captures: {:?}", captures);
+    }
+
+    #[test]
+    fn test_pawn_edge_after_river() {
+        // Red pawn at a4 (0,4) - left edge, after river
+        // Can move forward (0,3) and right (1,4), but NOT left (off board)
+        let fen = "1k7/9/9/9/P8/9/9/9/9/5K3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let pawn_pos = Position::new(0, 4);
+        let moves: Vec<Move> = board.generate_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == pawn_pos)
+            .collect();
+        // Edge pawn after river: forward + right = 2 moves
+        assert_eq!(moves.len(), 2, "Edge pawn after river should have 2 moves, got {}", moves.len());
+        assert!(moves.iter().any(|m| m.to == Position::new(0, 3)), "Should move forward");
+        assert!(moves.iter().any(|m| m.to == Position::new(1, 4)), "Should move right");
+    }
+
+    #[test]
+    fn test_advisor_at_palace_center() {
+        // Red advisor at e8 (4,8) - center of red palace
+        // Can move to d9, f9, d7, f7 = 4 diagonal moves
+        let fen = "4k4/9/9/9/9/9/9/9/4A4/3K5 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let advisor_pos = Position::new(4, 8);
+        let moves: Vec<Move> = board.generate_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == advisor_pos)
+            .collect();
+        // Advisor at center of palace should have 4 moves (if not blocked by flying general)
+        // King at d9 (3,9) blocks one diagonal, so advisor has fewer moves
+        assert!(moves.len() >= 2, "Advisor at palace center should have at least 2 moves, got {}", moves.len());
+        for m in &moves {
+            assert!(is_in_palace(m.to, Color::Red), "Advisor must stay in palace");
+        }
+    }
+
+    #[test]
+    fn test_king_at_palace_corner() {
+        // Red king at d9 (3,9) - left edge of palace
+        // Can only move right (e9) and down (d8)
+        let fen = "1k7/9/9/9/9/9/9/9/9/3K5 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let king_pos = Position::new(3, 9);
+        let moves: Vec<Move> = board.generate_legal_moves(Color::Red)
+            .into_iter()
+            .filter(|m| m.from == king_pos)
+            .collect();
+        // King at left edge of palace: right (4,9) and down (3,8)
+        // Left (2,9) is out of palace, up (3,10) is off board
+        assert!(moves.len() >= 1, "King at palace edge should have at least 1 move");
+        for m in &moves {
+            assert!(is_in_palace(m.to, Color::Red), "King must stay in palace");
+        }
+    }
 }

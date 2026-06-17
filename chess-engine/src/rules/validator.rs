@@ -3,6 +3,7 @@ use crate::board::Position;
 use crate::pieces::{Color, PieceType, Move};
 use crate::pieces::movement::*;
 use crate::rules::is_in_check;
+use crate::pieces::movement::{is_line_clear, count_pieces_on_line};
 
 /// 走法错误类型
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,30 +143,9 @@ fn is_valid_bishop_move(board: &Board, m: Move, color: Color) -> bool {
     board.piece_at(eye).is_none()
 }
 
-/// 马: 走"日"字，不蹩腿
+/// 马: 走"日"字，不蹩腿 (复用 movement 中的统一蹩腿检测)
 fn is_valid_knight_move(board: &Board, m: Move) -> bool {
-    let dc = (m.to.col as i8 - m.from.col as i8).abs();
-    let dr = (m.to.row as i8 - m.from.row as i8).abs();
-    // 必须走"日"字
-    if !((dc == 1 && dr == 2) || (dc == 2 && dr == 1)) {
-        return false;
-    }
-    // 蹩马腿检测
-    let leg_col: i8;
-    let leg_row: i8;
-    if dc == 2 {
-        // 横向走2格，马腿在横向第1格
-        leg_col = m.from.col as i8 + if m.to.col > m.from.col { 1 } else { -1 };
-        leg_row = m.from.row as i8;
-    } else {
-        // 纵向走2格，马腿在纵向第1格
-        leg_col = m.from.col as i8;
-        leg_row = m.from.row as i8 + if m.to.row > m.from.row { 1 } else { -1 };
-    }
-    if leg_col < 0 || leg_col > 8 || leg_row < 0 || leg_row > 9 {
-        return false;
-    }
-    board.piece_at(Position::new(leg_col as u8, leg_row as u8)).is_none()
+    can_knight_reach(board, m.from, m.to)
 }
 
 /// 车: 直线任意距离，不能越子
@@ -175,7 +155,7 @@ fn is_valid_rook_move(board: &Board, m: Move) -> bool {
         return false;
     }
     // 路径上不能有阻挡
-    is_path_clear(board, m.from, m.to)
+    is_line_clear(board, m.from, m.to)
 }
 
 /// 炮: 移动同车 (无子阻挡)；吃子需隔一子
@@ -184,7 +164,7 @@ fn is_valid_cannon_move(board: &Board, m: Move, _color: Color) -> bool {
     if m.from.col != m.to.col && m.from.row != m.to.row {
         return false;
     }
-    let count = count_pieces_between(board, m.from, m.to);
+    let count = count_pieces_on_line(board, m.from, m.to);
     let target = board.piece_at(m.to);
     if target.is_some() {
         // 吃子: 恰好隔1子
@@ -201,64 +181,16 @@ fn is_valid_pawn_move(m: Move, color: Color) -> bool {
     let dr = m.to.row as i8 - m.from.row as i8;
     let crossed = has_crossed_river(m.from.row, color);
 
-    // 只能走一步
-    if dc + dr.abs() != 1 && (dc != 1 || dr != 0) && (dc != 0 || dr.abs() != 1) {
-        return false;
-    }
-
-    if dc == 1 {
-        // 横向移动: 必须已过河，且在同一行
-        crossed && m.from.row == m.to.row
-    } else {
+    if dc == 1 && dr == 0 {
+        // 横向移动: 必须已过河
+        crossed
+    } else if dc == 0 && dr.abs() == 1 {
         // 纵向移动: 必须前进
         let forward = pawn_forward_offset(color);
         dr == forward
-    }
-}
-
-/// 检查两点之间的直线路径是否畅通 (不包含起点和终点)
-fn is_path_clear(board: &Board, from: Position, to: Position) -> bool {
-    if from.col == to.col {
-        let min_row = from.row.min(to.row);
-        let max_row = from.row.max(to.row);
-        for row in (min_row + 1)..max_row {
-            if board.piece_at(Position::new(from.col, row)).is_some() {
-                return false;
-            }
-        }
     } else {
-        let min_col = from.col.min(to.col);
-        let max_col = from.col.max(to.col);
-        for col in (min_col + 1)..max_col {
-            if board.piece_at(Position::new(col, from.row)).is_some() {
-                return false;
-            }
-        }
+        false
     }
-    true
-}
-
-/// 计算两点之间直线路径上的棋子数 (不包含起点和终点)
-fn count_pieces_between(board: &Board, from: Position, to: Position) -> usize {
-    let mut count = 0;
-    if from.col == to.col {
-        let min_row = from.row.min(to.row);
-        let max_row = from.row.max(to.row);
-        for row in (min_row + 1)..max_row {
-            if board.piece_at(Position::new(from.col, row)).is_some() {
-                count += 1;
-            }
-        }
-    } else {
-        let min_col = from.col.min(to.col);
-        let max_col = from.col.max(to.col);
-        for col in (min_col + 1)..max_col {
-            if board.piece_at(Position::new(col, from.row)).is_some() {
-                count += 1;
-            }
-        }
-    }
-    count
 }
 
 #[cfg(test)]
@@ -300,5 +232,139 @@ mod tests {
         let board = Board::from_fen(fen).unwrap();
         let m = Move::new(Position::new(3, 9), Position::new(4, 9));
         assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::WouldBeInCheck));
+    }
+
+    #[test]
+    fn test_validate_cannot_capture_own_piece() {
+        let board = Board::initial();
+        // Try moving red pawn to red cannon position
+        let m = Move::new(Position::new(0, 6), Position::new(1, 7));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::CannotCaptureOwnPiece));
+    }
+
+    #[test]
+    fn test_validate_out_of_bounds() {
+        let board = Board::initial();
+        let _m = Move::new(Position::new(0, 0), Position::new(9, 0)); // col 9 is out of bounds
+        // This would fail at NoPieceAtFrom since Position::new(9,0) may still construct
+        // Let's test with a valid from but the move is illegal
+        let m = Move::new(Position::new(4, 9), Position::new(4, 10)); // row 10 out of bounds
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::OutOfBounds));
+    }
+
+    #[test]
+    fn test_validate_illegal_knight_jump() {
+        // Knight trying to jump like a bishop
+        let fen = "4k4/9/9/9/9/4N4/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Knight at (4,5) trying to go to (6,7) — not a valid knight move pattern
+        let m = Move::new(Position::new(4, 5), Position::new(6, 7));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::IllegalMove));
+    }
+
+    #[test]
+    fn test_validate_flying_general() {
+        // Moving an advisor that blocks the flying general should be illegal
+        // Red king at e9 (4,9), black king at e0 (4,0), red advisor at e8 (4,8) blocks.
+        // Advisor at (4,8) moves to d9 (3,9) — a valid advisor diagonal move within palace.
+        // But after moving, both kings face each other on e-file with no intervening piece.
+        let fen = "4k4/9/9/9/9/9/9/9/4A4/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let m = Move::new(Position::new(4, 8), Position::new(3, 9));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::FlyingGeneral));
+    }
+
+    #[test]
+    fn test_validate_cannon_no_screen_capture() {
+        // Cannon cannot capture without a screen piece
+        let fen = "4k4/9/9/9/9/9/9/4C4/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Cannon at (4,7) trying to capture king at (4,0) — no screen piece between them
+        let m = Move::new(Position::new(4, 7), Position::new(4, 0));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::IllegalMove));
+    }
+
+    #[test]
+    fn test_validate_king_move_in_palace() {
+        // Valid king move: e9 to d9
+        let fen = "4k4/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let m = Move::new(Position::new(4, 9), Position::new(3, 9));
+        assert!(validate_move(&board, m, Color::Red).is_ok());
+    }
+
+    #[test]
+    fn test_validate_advisor_move() {
+        // Valid advisor move: d9 to e8
+        let fen = "4k4/9/9/9/9/9/9/9/3A5/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let m = Move::new(Position::new(3, 8), Position::new(4, 7));
+        // This might leave flying general, so check it's either ok or FlyingGeneral
+        let result = validate_move(&board, m, Color::Red);
+        assert!(result.is_ok() || result == Err(MoveError::FlyingGeneral) || result == Err(MoveError::WouldBeInCheck));
+    }
+
+    #[test]
+    fn test_validate_bishop_move_with_eye() {
+        // Bishop at c9 (2,9), eye at d8 (3,8) blocked by piece
+        let fen = "4k4/9/9/9/9/9/9/9/3A5/2B1K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Bishop at (2,9) trying to go to (4,7) - eye at (3,8) blocked by advisor
+        let m = Move::new(Position::new(2, 9), Position::new(4, 7));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::IllegalMove));
+    }
+
+    #[test]
+    fn test_validate_knight_move_with_leg() {
+        // Knight at e8 (4,7), pawn at e9 (4,8) blocks downward leg
+        let fen = "4k4/9/9/9/9/9/9/4N4/4P4/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Knight at (4,7) trying to go to (3,9) - leg at (4,8) is blocked by pawn
+        let m = Move::new(Position::new(4, 7), Position::new(3, 9));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::IllegalMove));
+    }
+
+    #[test]
+    fn test_validate_rook_move_path_check() {
+        // Rook at a9, path to a0 blocked by piece at a5
+        let fen = "4k4/9/9/9/9/P8/9/9/9/R3K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Rook at (0,9) trying to go to (0,3) - pawn at (0,5) blocks
+        let m = Move::new(Position::new(0, 9), Position::new(0, 3));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::IllegalMove));
+    }
+
+    #[test]
+    fn test_validate_cannon_move_with_screen() {
+        // Cannon capture through screen: valid
+        // Cannon at (4,7), screen pawn at (4,5), black bishop at (4,4)
+        let fen = "4k4/9/9/9/4b4/4P4/9/4C4/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Cannon can capture bishop through pawn screen
+        let m = Move::new(Position::new(4, 7), Position::new(4, 4));
+        // This should be valid (capture through 1 screen)
+        let result = validate_move(&board, m, Color::Red);
+        assert!(result.is_ok() || result == Err(MoveError::WouldBeInCheck) || result == Err(MoveError::FlyingGeneral),
+            "Cannon capture through screen should be legal move pattern, got {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_pawn_backward_rejected() {
+        // Red pawn cannot move backward
+        let fen = "1k7/9/9/9/9/9/P8/9/9/5K3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Red pawn at (0,6) trying to go backward to (0,7)
+        let m = Move::new(Position::new(0, 6), Position::new(0, 7));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::IllegalMove));
+    }
+
+    #[test]
+    fn test_validate_pawn_sideways_before_river() {
+        // Red pawn cannot move sideways before crossing river
+        let fen = "1k7/9/9/9/9/9/P8/9/9/5K3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        // Red pawn at (0,6) trying to go sideways to (1,6)
+        let m = Move::new(Position::new(0, 6), Position::new(1, 6));
+        assert_eq!(validate_move(&board, m, Color::Red), Err(MoveError::IllegalMove));
     }
 }

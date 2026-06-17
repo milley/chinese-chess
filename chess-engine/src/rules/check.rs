@@ -1,5 +1,6 @@
 use crate::board::{Board, Position};
 use crate::pieces::{Color, PieceType};
+use crate::pieces::movement::{is_line_clear, count_pieces_on_line, can_knight_reach, can_pawn_attack as pawn_can_attack};
 
 /// 找到某方将/帅的位置
 pub fn find_king(board: &Board, color: Color) -> Option<Position> {
@@ -30,30 +31,19 @@ pub fn is_in_check(board: &Board, color: Color) -> bool {
                 }
             }
             PieceType::Knight => {
-                if can_knight_attack(board, pos, king_pos) {
+                if can_knight_reach(board, pos, king_pos) {
                     return true;
                 }
             }
             PieceType::Pawn => {
-                if can_pawn_attack(pos, king_pos, opponent) {
+                if pawn_can_attack(pos, king_pos, opponent) {
                     return true;
                 }
             }
             PieceType::King => {
                 // 飞将规则：两将面对面
-                if pos.col == king_pos.col {
-                    let min_row = pos.row.min(king_pos.row);
-                    let max_row = pos.row.max(king_pos.row);
-                    let mut blocked = false;
-                    for row in (min_row + 1)..max_row {
-                        if board.piece_at(Position::new(pos.col, row)).is_some() {
-                            blocked = true;
-                            break;
-                        }
-                    }
-                    if !blocked {
-                        return true;
-                    }
+                if pos.col == king_pos.col && is_line_clear(board, pos, king_pos) {
+                    return true;
                 }
             }
             // 仕/士和相/象不能攻击将（它们不能离开九宫/己方半场）
@@ -69,27 +59,7 @@ fn can_rook_attack(board: &Board, from: Position, target: Position) -> bool {
     if from.col != target.col && from.row != target.row {
         return false; // 不在同一行或列
     }
-
-    // 检查路径上是否有阻挡
-    if from.col == target.col {
-        let min_row = from.row.min(target.row);
-        let max_row = from.row.max(target.row);
-        for row in (min_row + 1)..max_row {
-            if board.piece_at(Position::new(from.col, row)).is_some() {
-                return false;
-            }
-        }
-    } else {
-        let min_col = from.col.min(target.col);
-        let max_col = from.col.max(target.col);
-        for col in (min_col + 1)..max_col {
-            if board.piece_at(Position::new(col, from.row)).is_some() {
-                return false;
-            }
-        }
-    }
-
-    true
+    is_line_clear(board, from, target)
 }
 
 /// 炮是否能攻击到目标位置
@@ -98,79 +68,8 @@ fn can_cannon_attack(board: &Board, from: Position, target: Position) -> bool {
         return false; // 不在同一行或列
     }
 
-    // 计算路径上的棋子数
-    let mut count = 0;
-    if from.col == target.col {
-        let min_row = from.row.min(target.row);
-        let max_row = from.row.max(target.row);
-        for row in (min_row + 1)..max_row {
-            if board.piece_at(Position::new(from.col, row)).is_some() {
-                count += 1;
-            }
-        }
-    } else {
-        let min_col = from.col.min(target.col);
-        let max_col = from.col.max(target.col);
-        for col in (min_col + 1)..max_col {
-            if board.piece_at(Position::new(col, from.row)).is_some() {
-                count += 1;
-            }
-        }
-    }
-
     // 炮吃子需要恰好一个炮架
-    count == 1
-}
-
-/// 马是否能攻击到目标位置
-fn can_knight_attack(board: &Board, from: Position, target: Position) -> bool {
-    let dc = (target.col as i8 - from.col as i8).abs();
-    let dr = (target.row as i8 - from.row as i8).abs();
-
-    // 马走"日"字
-    if !((dc == 1 && dr == 2) || (dc == 2 && dr == 1)) {
-        return false;
-    }
-
-    // 蹩马腿检测
-    let leg_col: i8;
-    let leg_row: i8;
-    if dc == 2 {
-        // 横向走2格，马腿在横向第1格
-        leg_col = from.col as i8 + if target.col > from.col { 1 } else { -1 };
-        leg_row = from.row as i8;
-    } else {
-        // 纵向走2格，马腿在纵向第1格
-        leg_col = from.col as i8;
-        leg_row = from.row as i8 + if target.row > from.row { 1 } else { -1 };
-    }
-
-    if leg_col < 0 || leg_col > 8 || leg_row < 0 || leg_row > 9 {
-        return false;
-    }
-
-    board.piece_at(Position::new(leg_col as u8, leg_row as u8)).is_none()
-}
-
-/// 兵/卒是否能攻击到目标位置
-fn can_pawn_attack(from: Position, target: Position, color: Color) -> bool {
-    let dc = (target.col as i8 - from.col as i8).abs();
-    let dr = (target.row as i8 - from.row as i8).abs();
-
-    if dc + dr != 1 {
-        return false; // 只能走一步
-    }
-
-    let crossed = crate::pieces::movement::has_crossed_river(from.row, color);
-    let forward = crate::pieces::movement::pawn_forward_offset(color);
-
-    if dc == 1 {
-        // 横向移动，必须已过河
-        crossed && from.row == target.row
-    } else {
-        // 纵向移动，必须前进
-        (target.row as i8 - from.row as i8) == forward
-    }
+    count_pieces_on_line(board, from, target) == 1
 }
 
 /// 检测是否将杀 (checkmate)
@@ -277,28 +176,18 @@ mod tests {
     #[test]
     fn test_stalemate() {
         // 困毙局面: 黑方不在将军中但没有合法走法
-        // Black king at f0 (5,0) in palace, Red rooks at f2 (5,2) and e2 (4,2)
-        // blocking all escape squares. King can't move to e0 (captured by e2 rook on same file),
-        // g0 (out of palace), f1 (captured by f2 rook on same file), e1 (captured by e2 rook on same file)
-        // Actually let me use a cleaner stalemate: king stuck with all moves blocked
-        // Black king at e0 (4,0), red rooks at e2 (4,2) and d1 (3,1)
-        // King can go to d0(3,0) - blocked by d1 rook on same file? d0 is col 3, rook at col 3 row 1, yes.
-        // King can go to f0(5,0) - no attacker. Hmm, not stalemate.
-        // Let me use: king at e0, red pieces controlling all king moves
-        let fen = "4k4/9/3R1R3/9/9/9/9/9/9/4K4 b - - 0 1";
+        // Black king at e0 (4,0). Only 5 possible king moves:
+        // d0 (3,0) - controlled by red rook on d-file
+        // d1 (3,1) - controlled by red rook on d-file
+        // e1 (4,1) - controlled by red pawn at e2 (4,2) attacking forward
+        // f0 (5,0) - controlled by red rook on f-file
+        // f1 (5,1) - controlled by red rook on f-file
+        // None of these attack e0 directly, so king is NOT in check.
+        let fen = "4k4/9/4P4/9/9/9/9/9/9/3R1R1K1 b - - 0 1";
         let board = Board::from_fen(fen).unwrap();
-        // Two rooks on row 2 controlling the e-file and flanking files
-        // King at (4,0) can move to (3,0) - rook at (3,2) controls col 3, and (5,0) - rook at (5,2) controls col 5
-        // King can move to (4,1) - but e1 is on same file as rook at (4,2), blocked
-        // Wait: (4,1) is between king(4,0) and rook(4,2), path is clear from (4,1) to (4,2) so king would be in check
-        // (3,0) is on same file as rook at (3,2) - check
-        // (5,0) is on same file as rook at (5,2) - check
-        // So all moves leave king in check = stalemate (king not currently in check, no legal moves)
-        let in_check = is_in_check(&board, Color::Black);
-        let has_moves = !board.generate_legal_moves(Color::Black).is_empty();
-        if !in_check && !has_moves {
-            assert!(is_stalemate(&board, Color::Black), "Should be stalemate");
-        }
+        assert!(!is_in_check(&board, Color::Black), "Black should NOT be in check");
+        assert!(board.generate_legal_moves(Color::Black).is_empty(), "Black should have no legal moves");
+        assert!(is_stalemate(&board, Color::Black), "Should be stalemate");
     }
 
     #[test]
@@ -321,5 +210,39 @@ mod tests {
         let fen = "4k4/R8/4R4/9/9/9/9/9/9/4K4 b - - 0 1";
         let board = Board::from_fen(fen).unwrap();
         assert!(is_in_check(&board, Color::Black), "Black should be in check from rooks");
+    }
+
+    #[test]
+    fn test_advisor_cannot_check() {
+        // Advisor cannot check because it can't leave the palace
+        // Place red king off the e-file so flying general doesn't apply
+        let fen = "4k4/9/9/9/9/9/9/9/3A5/3K5 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(!is_in_check(&board, Color::Black), "Advisor cannot check");
+    }
+
+    #[test]
+    fn test_bishop_cannot_check() {
+        // Bishop cannot check because it can't cross the river
+        let fen = "4k4/9/9/9/9/9/9/4B4/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(!is_in_check(&board, Color::Black), "Bishop cannot check");
+    }
+
+    #[test]
+    fn test_no_king_not_in_check() {
+        // If there's no king, is_in_check should return false
+        let fen = "9/9/9/9/9/9/9/9/9/4K4 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(!is_in_check(&board, Color::Black), "No black king means not in check");
+    }
+
+    #[test]
+    fn test_rook_blocked_by_own_piece_not_checking() {
+        // Rook on same file as king but blocked by own piece
+        // Red rook at e9 (4,9), red pawn at e8 (4,8) blocks the rook from seeing black king at e0 (4,0)
+        let fen = "4k4/9/9/9/9/9/9/9/4P4/4RK3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(!is_in_check(&board, Color::Black), "Rook blocked by own pawn should not check");
     }
 }

@@ -565,4 +565,79 @@ mod tests {
         // Position with col > 8 or row > 9 cannot be constructed via Position::new
         // since u8 can hold any value, but is_valid() checks
     }
+
+    #[test]
+    fn test_king_position_cache() {
+        let board = Board::initial();
+        // Red king should be cached at e9 (4,9)
+        assert_eq!(board.find_king(Color::Red), Some(Position::new(4, 9)));
+        // Black king should be cached at e0 (4,0)
+        assert_eq!(board.find_king(Color::Black), Some(Position::new(4, 0)));
+    }
+
+    #[test]
+    fn test_king_position_after_move() {
+        let mut board = Board::initial();
+        // Move red king from e9 to d9
+        let m = Move::new(Position::new(4, 9), Position::new(3, 9));
+        let captured = board.make_move(m);
+        assert_eq!(board.find_king(Color::Red), Some(Position::new(3, 9)));
+        // Undo should restore
+        board.undo_move(m, captured);
+        assert_eq!(board.find_king(Color::Red), Some(Position::new(4, 9)));
+    }
+
+    #[test]
+    fn test_all_pieces_iterator() {
+        let board = Board::initial();
+        let all: Vec<_> = board.all_pieces().collect();
+        assert_eq!(all.len(), 32, "Initial position should have 32 pieces");
+        // Verify each piece has a valid position
+        for (pos, piece) in &all {
+            assert!(pos.is_valid());
+            assert!(piece.piece_type.base_value() > 0);
+        }
+    }
+
+    #[test]
+    fn test_pieces_of_color_filter() {
+        let board = Board::initial();
+        let red: Vec<_> = board.pieces_of_color(Color::Red).collect();
+        let black: Vec<_> = board.pieces_of_color(Color::Black).collect();
+        assert_eq!(red.len(), 16);
+        assert_eq!(black.len(), 16);
+        // Verify all red pieces are actually red
+        for (_, piece) in &red {
+            assert_eq!(piece.color, Color::Red);
+        }
+        for (_, piece) in &black {
+            assert_eq!(piece.color, Color::Black);
+        }
+    }
+
+    #[test]
+    fn test_fen_one_side_only() {
+        // Board with only red pieces
+        let fen = "9/9/9/9/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert_eq!(board.piece_count(), 16);
+        assert_eq!(board.pieces_of_color(Color::Red).count(), 16);
+        assert_eq!(board.pieces_of_color(Color::Black).count(), 0);
+        assert!(board.find_king(Color::Red).is_some());
+        assert!(board.find_king(Color::Black).is_none());
+    }
+
+    #[test]
+    fn test_piece_count_after_make_undo() {
+        let board = Board::initial();
+        assert_eq!(board.piece_count(), 32);
+        let mut board2 = board.clone();
+        // Non-capture move
+        let m = Move::new(Position::new(1, 7), Position::new(4, 7));
+        let captured = board2.make_move(m);
+        assert!(captured.is_none());
+        assert_eq!(board2.piece_count(), 32, "Non-capture should not change piece count");
+        board2.undo_move(m, captured);
+        assert_eq!(board2.piece_count(), 32);
+    }
 }
