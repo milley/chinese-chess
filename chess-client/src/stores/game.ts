@@ -50,6 +50,29 @@ export const useGameStore = defineStore('game', () => {
     startLocalTimer();
   }
 
+  /// Join WS room only (no REST joinGame call).
+  /// Used by GameView on mount for direct URL / refresh — the player
+  /// is already joined via DB, we just need the real-time WS channel.
+  function joinWsRoom(gameId: string) {
+    if (!currentGame.value) return;
+
+    // Determine player color from game data if not already set
+    if (!playerColor.value) {
+      const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
+      if (currentGame.value.red_player?.id === userId) {
+        playerColor.value = 'red';
+      } else if (currentGame.value.black_player?.id === userId) {
+        playerColor.value = 'black';
+      } else {
+        playerColor.value = null;
+        isSpectator.value = true;
+      }
+    }
+
+    wsService.joinGame(gameId);
+    startLocalTimer();
+  }
+
   async function loadGame(gameId: string) {
     const game = await api.getGame(gameId);
     currentGame.value = game;
@@ -92,6 +115,12 @@ export const useGameStore = defineStore('game', () => {
   }
 
   function handleWsMessage(message: WsServerMessage) {
+    // Filter messages by game_id — ignore messages for other games
+    const msgGameId = (message as any).game_id as string | undefined;
+    if (msgGameId && currentGame.value && msgGameId !== currentGame.value.id) {
+      return;
+    }
+
     switch (message.type) {
       case 'joined_game':
         if (currentGame.value) {
@@ -216,6 +245,17 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
+  /// Clean up state and timers when leaving a game view.
+  /// Resets auxiliary state and stops the local timer.
+  function cleanup() {
+    stopLocalTimer();
+    selectedSquare.value = null;
+    validMoves.value = [];
+    moveHistory.value = [];
+    drawOffered.value = false;
+    errorMessage.value = null;
+  }
+
   // Register WS message listener
   wsService.onMessage(handleWsMessage);
 
@@ -230,7 +270,7 @@ export const useGameStore = defineStore('game', () => {
     currentGame, playerColor, isSpectator, selectedSquare, validMoves,
     moveHistory, drawOffered, redTime, blackTime, redInByoyomi, blackInByoyomi,
     errorMessage, isMyTurn,
-    createGame, joinGame, loadGame, selectSquare, makeMove,
-    resign, offerDraw, respondDraw,
+    createGame, joinGame, joinWsRoom, loadGame, selectSquare, makeMove,
+    resign, offerDraw, respondDraw, cleanup,
   };
 });

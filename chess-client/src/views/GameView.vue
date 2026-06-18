@@ -96,6 +96,13 @@ onMounted(async () => {
   const gameId = route.params.id as string;
   if (gameId) {
     await gameStore.loadGame(gameId);
+    // Join WS room for real-time updates (handles direct URL / refresh)
+    gameStore.joinWsRoom(gameId);
   }
+});
+
+onUnmounted(() => {
+  // Clean up timer and state when leaving the game view
+  gameStore.cleanup();
 });
 </script>
