@@ -33,7 +33,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // 客户端信息 (认证后填充)
     let mut authenticated_user: Option<(Uuid, String)> = None;
     // 当前加入的对局 ID (用于断连清理)
-    let mut current_game_id: Option<Uuid> = None;
+    let mut current_game_ids: Vec<Uuid> = Vec::new();
+    // Track consecutive auth failures to prevent brute-force attacks
+    let mut auth_failures: u32 = 0;
+    const MAX_AUTH_FAILURES: u32 = 5;
 
     // 接收消息循环
     while let Some(msg) = receiver.next().await {
@@ -49,10 +52,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         if let Ok(claims) = verify_token(&token, &state.jwt_secret) {
                             if let Ok(user_id) = Uuid::parse_str(&claims.sub) {
                                 authenticated_user = Some((user_id, claims.username));
+                                auth_failures = 0;
                                 tx.send(serde_json::to_string(&ServerMessage::Pong).unwrap_or_default()).ok();
                             }
                         } else {
+                            auth_failures += 1;
                             tx.send(serde_json::to_string(&ServerMessage::Error { message: "Authentication failed".into() }).unwrap_or_default()).ok();
+                            if auth_failures >= MAX_AUTH_FAILURES {
+                                // Too many failed auth attempts — close connection to prevent brute-force
+                                break;
+                            }
                         }
                     }
                     ClientMessage::Ping => {
@@ -126,7 +135,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     ClientMessage::JoinGame { game_id } => {
                         if let Some((user_id, username)) = &authenticated_user {
                             if let Ok(gid) = Uuid::parse_str(&game_id) {
-                                current_game_id = Some(gid);
+                                if !current_game_ids.contains(&gid) {
+                                    current_game_ids.push(gid);
+                                }
                                 let room = state.room_manager.get_or_create_room(gid).await;
                                 if let Ok(room) = room {
                                     // Determine color from DB
@@ -209,7 +220,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         }
                                     }
                                 }
-                                current_game_id = None;
+                                current_game_ids.retain(|id| id != &gid);
                             }
                         }
                     }
@@ -295,12 +306,29 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     }
 
-    // 断连清理: 从房间移除玩家并通知对手
+    // 断连清理: 从所有已加入的房间移除玩家并通知对手
+    // If a player disconnects mid-game, it counts as a loss (resignation by disconnect).
     if let Some((user_id, _)) = &authenticated_user {
-        if let Some(gid) = current_game_id {
-            let room = state.room_manager.get_or_create_room(gid).await;
+        for gid in &current_game_ids {
+            let room = state.room_manager.get_or_create_room(*gid).await;
             if let Ok(room) = room {
-                room.handle_disconnect(*user_id).await;
+                if let Ok(Some((_, result_str, reason_str))) = room.handle_disconnect(*user_id).await {
+                    // Game ended by disconnect — persist to DB with Elo
+                    let game = state.game_repo.find_by_id(*gid).await.ok().flatten();
+                    if let Some(game) = game {
+                        let fen = room.fen().await;
+                        let _ = crate::services::elo_service::finish_game_with_elo(
+                            &state.game_repo,
+                            &state.user_repo,
+                            *gid,
+                            &game,
+                            &result_str,
+                            &reason_str,
+                            &fen,
+                            "[]",
+                        ).await;
+                    }
+                }
             }
         }
     }

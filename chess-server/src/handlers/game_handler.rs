@@ -81,6 +81,8 @@ pub async fn delete_game(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     game_service::delete_game(&state.game_repo, id, auth.user_id).await?;
+    // Clean up in-memory room to prevent zombie rooms
+    state.room_manager.remove_room(id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

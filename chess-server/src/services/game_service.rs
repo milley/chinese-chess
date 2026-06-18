@@ -78,7 +78,7 @@ pub async fn join_game(
     })
 }
 
-/// 删除对局 (仅玩家可删除)
+/// 删除对局 (仅玩家可删除，且仅限等待中或已结束的对局)
 pub async fn delete_game(
     game_repo: &GameRepository,
     game_id: Uuid,
@@ -90,6 +90,11 @@ pub async fn delete_game(
     let is_player = game.red_player_id == Some(user_id) || game.black_player_id == Some(user_id);
     if !is_player {
         return Err(AppError::Forbidden("Only players in this game can delete it".into()));
+    }
+
+    // Prevent deletion of games that are currently in progress
+    if game.status == "playing" {
+        return Err(AppError::BadRequest("Cannot delete a game that is in progress. Resign or wait for it to finish.".into()));
     }
 
     game_repo.delete(game_id).await?;

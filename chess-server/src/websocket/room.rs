@@ -179,15 +179,18 @@ impl GameRoom {
             (None, None)
         };
 
-        drop(state);
-
         // Update time control: reset move_elapsed for the player who just moved
+        // This is done while still holding the game_state write lock to prevent
+        // inconsistency between game state and time state (e.g., tick_time running
+        // between the two locks and seeing stale move_elapsed).
         {
             let mut tc = self.time_control.write().await;
             if let Some(ref mut tc) = *tc {
                 tc.on_move_made(player_color);
             }
         }
+
+        drop(state);
 
         // Get current time state for MoveMade message
         let (red_time, black_time) = {
@@ -275,18 +278,23 @@ impl GameRoom {
     }
 
     /// 提议和棋
+    /// Atomically checks game-over and sets draw offer under a single game_state read lock
+    /// to prevent TOCTOU between the check and the offer.
     pub async fn offer_draw(&self, user_id: Uuid) -> Result<(), String> {
         let color = self.player_color(user_id).await?;
 
-        // 检查游戏是否已结束
-        if self.game_state.read().await.is_game_over() {
-            return Err("Game is already over".into());
+        // Atomically check game-over
+        {
+            let state = self.game_state.read().await;
+            if state.is_game_over() {
+                return Err("Game is already over".into());
+            }
         }
 
-        // 设置和棋提议
+        // Set draw offer
         *self.draw_offer.write().await = Some(color);
 
-        // 通知对方有和棋提议
+        // Notify opponent
         let msg = ServerMessage::DrawOffered {
             game_id: self.game_id.to_string(),
         };
@@ -298,10 +306,13 @@ impl GameRoom {
     /// 响应和棋提议
     /// Returns Some((game_id, result_str, reason_str)) if draw accepted (game ended),
     /// None if draw rejected or no game end.
+    ///
+    /// Uses a single game_state write lock to atomically check is_game_over and execute
+    /// the draw, preventing TOCTOU between the check and the draw() call.
     pub async fn respond_draw(&self, user_id: Uuid, accept: bool) -> Result<Option<(String, String, String)>, String> {
         let color = self.player_color(user_id).await?;
 
-        // 检查是否有待处理的和棋提议
+        // Check for pending draw offer
         let offer = *self.draw_offer.read().await;
         if offer.is_none() {
             return Err("No draw offer to respond to".into());
@@ -311,16 +322,25 @@ impl GameRoom {
         }
 
         if accept {
-            // Check if game is already over before accepting draw
-            if self.game_state.read().await.is_game_over() {
+            // Atomically check game-over + execute draw under one write lock
+            let already_over = {
+                let mut state = self.game_state.write().await;
+                if state.is_game_over() {
+                    true
+                } else {
+                    state.draw();
+                    false
+                }
+            };
+
+            if already_over {
+                // Clear the offer since game is already over
+                *self.draw_offer.write().await = None;
                 return Err("Game is already over".into());
             }
 
-            // 清除和棋提议
+            // Clear draw offer
             *self.draw_offer.write().await = None;
-
-            // 执行和棋
-            self.game_state.write().await.draw();
 
             let msg = ServerMessage::DrawResponse {
                 game_id: self.game_id.to_string(),
@@ -337,7 +357,7 @@ impl GameRoom {
 
             Ok(Some((self.game_id.to_string(), "draw".to_string(), "draw_agreement".to_string())))
         } else {
-            // 拒绝和棋，清除提议
+            // Reject draw, clear offer
             *self.draw_offer.write().await = None;
 
             let msg = ServerMessage::DrawResponse {
@@ -353,18 +373,29 @@ impl GameRoom {
     /// 玩家离开对局 (对局中离开判负)
     /// Returns Some((game_id, result_str, reason_str)) if game ended by resignation,
     /// None if game was already over or player was just removed.
+    ///
+    /// Uses a single game_state write lock to avoid TOCTOU between is_game_over check
+    /// and the resign operation.
     pub async fn leave(&self, user_id: Uuid) -> Result<Option<(String, String, String)>, String> {
-        let is_over = self.game_state.read().await.is_game_over();
-        if is_over {
-            // 对局已结束，只需移除玩家
-            self.remove_player(user_id).await;
+        let color = self.player_color(user_id).await?;
+
+        // Atomically check game-over + resign under one write lock
+        let (is_over, already_over) = {
+            let mut state = self.game_state.write().await;
+            if state.is_game_over() {
+                (true, true)
+            } else {
+                state.resign(color);
+                (true, false)
+            }
+        };
+
+        // Always remove the player from the room
+        self.remove_player(user_id).await;
+
+        if already_over {
             return Ok(None);
         }
-
-        // 对局中离开 = 认输
-        let color = self.player_color(user_id).await?;
-        self.remove_player(user_id).await;
-        self.game_state.write().await.resign(color);
 
         let (result_str, reason_str) = match color {
             chess_engine::Color::Red => ("black_win", "resign"),
@@ -382,13 +413,53 @@ impl GameRoom {
     }
 
     /// 客户端断连处理
-    pub async fn handle_disconnect(&self, user_id: Uuid) {
+    /// If the game is in progress, the disconnecting player loses by resignation.
+    /// If the game is already over, just remove the player.
+    pub async fn handle_disconnect(&self, user_id: Uuid) -> Result<Option<(String, String, String)>, String> {
+        // Check if this user is actually a player (not a spectator)
+        let color_result = self.player_color(user_id).await;
+
+        // Always remove the player from the room
         self.remove_player(user_id).await;
 
+        // Notify opponent about disconnect
         let msg = ServerMessage::OpponentDisconnected {
             game_id: self.game_id.to_string(),
         };
         self.broadcast(&msg).await;
+
+        // If not a player (spectator), nothing more to do
+        let color = match color_result {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+
+        // If game is already over, nothing more to do
+        if self.is_game_over().await {
+            return Ok(None);
+        }
+
+        // Game is in progress and a player disconnected — treat as resignation
+        {
+            let mut state = self.game_state.write().await;
+            if !state.is_game_over() {
+                state.resign(color);
+            }
+        }
+
+        let (result_str, reason_str) = match color {
+            chess_engine::Color::Red => ("black_win", "disconnect"),
+            chess_engine::Color::Black => ("red_win", "disconnect"),
+        };
+
+        let over_msg = ServerMessage::GameOver {
+            game_id: self.game_id.to_string(),
+            result: result_str.to_string(),
+            reason: reason_str.to_string(),
+        };
+        self.broadcast(&over_msg).await;
+
+        Ok(Some((self.game_id.to_string(), result_str.to_string(), reason_str.to_string())))
     }
 
     /// 获取玩家颜色
@@ -428,30 +499,34 @@ impl GameRoom {
             chess_engine::Color::Black => self.red_player.read().await,
         };
         if let Some(client) = player.as_ref() {
-            client.send(&json);
+            let _ = client.send(&json); // Ignore send failure — handled on disconnect
         }
     }
 
     /// 广播消息到房间内所有客户端
+    /// Removes spectators whose send channel is closed (dead connections).
     pub async fn broadcast(&self, message: &ServerMessage) {
         let json = serde_json::to_string(message).unwrap_or_default();
 
         let red = self.red_player.read().await;
         if let Some(client) = red.as_ref() {
-            client.send(&json);
+            if !client.send(&json) {
+                // Red player's channel is dead — they'll be cleaned up on disconnect
+            }
         }
         drop(red);
 
         let black = self.black_player.read().await;
         if let Some(client) = black.as_ref() {
-            client.send(&json);
+            if !client.send(&json) {
+                // Black player's channel is dead — they'll be cleaned up on disconnect
+            }
         }
         drop(black);
 
-        let spectators = self.spectators.read().await;
-        for spectator in spectators.iter() {
-            spectator.send(&json);
-        }
+        // Broadcast to spectators and prune dead ones
+        let mut spectators = self.spectators.write().await;
+        spectators.retain(|spectator| spectator.send(&json));
     }
 
     /// 获取当前 FEN
@@ -536,5 +611,10 @@ impl GameRoom {
             let black_remaining = tc.remaining(chess_engine::Color::Black);
             let _ = self.game_repo.update_time(self.game_id, red_remaining, black_remaining).await;
         }
+    }
+
+    /// Get a read guard on the time control (for external inspection like tick_count).
+    pub async fn time_control_read(&self) -> tokio::sync::RwLockReadGuard<'_, Option<chess_engine::TimeControl>> {
+        self.time_control.read().await
     }
 }

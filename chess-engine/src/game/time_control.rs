@@ -57,6 +57,9 @@ pub struct TimeControl {
     pub black: PlayerTime,
     /// Whether time control is active (game has started and is in progress).
     pub active: bool,
+    /// Monotonically increasing tick counter (incremented each tick when active).
+    /// Useful for throttling periodic operations like DB persistence.
+    tick_count: u64,
 }
 
 impl TimeControl {
@@ -85,6 +88,7 @@ impl TimeControl {
                 move_elapsed: 0,
             },
             active: false,
+            tick_count: 0,
         }
     }
 
@@ -127,6 +131,7 @@ impl TimeControl {
                 move_elapsed: 0,
             },
             active: false,
+            tick_count: 0,
         }
     }
 
@@ -147,6 +152,8 @@ impl TimeControl {
                 active_phase: self.phase(side_to_move),
             };
         }
+
+        self.tick_count += 1;
 
         let player = match side_to_move {
             Color::Red => &mut self.red,
@@ -238,6 +245,12 @@ impl TimeControl {
     /// Check if any time control is configured.
     pub fn is_configured(&self) -> bool {
         self.time_control.is_some() || self.move_time_limit.is_some() || self.byoyomi.is_some()
+    }
+
+    /// Get the total number of active ticks that have occurred.
+    /// Useful for throttling periodic operations (e.g., DB persistence every N ticks).
+    pub fn tick_count(&self) -> u64 {
+        self.tick_count
     }
 }
 

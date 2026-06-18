@@ -106,6 +106,13 @@ impl RoomManager {
         }
     }
 
+    /// Remove a room from the in-memory map (used when a game is deleted via REST).
+    /// This prevents zombie rooms that no longer correspond to any DB record.
+    pub async fn remove_room(&self, game_id: Uuid) {
+        let mut rooms = self.rooms.write().await;
+        rooms.remove(&game_id);
+    }
+
     /// 启动超时检查器 (每秒 tick 一次)
     pub fn start_timeout_checker(&self) {
         let rooms = self.rooms.clone();
@@ -114,10 +121,16 @@ impl RoomManager {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
-                let rooms_guard = rooms.read().await;
-                for (_, room) in rooms_guard.iter() {
-                    let game_id = room.game_id();
 
+                // Snapshot room IDs under a short read lock, then release the lock
+                // before processing. This prevents blocking room creation/join
+                // during the potentially slow per-room tick + DB + broadcast cycle.
+                let room_ids: Vec<(Uuid, Arc<GameRoom>)> = {
+                    let rooms_guard = rooms.read().await;
+                    rooms_guard.iter().map(|(id, room)| (*id, room.clone())).collect()
+                };
+
+                for (game_id, room) in room_ids {
                     // Skip if game is already over
                     if room.is_game_over().await {
                         continue;
@@ -176,8 +189,18 @@ impl RoomManager {
                             };
                             room.broadcast(&msg).await;
 
-                            // Persist time to DB periodically (every second for accuracy)
-                            room.persist_time().await;
+                            // Persist time to DB periodically (every 5 seconds to reduce write load)
+                            // The server is authoritative — TimeUpdate broadcasts every second
+                            // ensure clients stay in sync even if DB writes are less frequent.
+                            {
+                                let tc = room.time_control_read().await;
+                                if let Some(ref tc) = *tc {
+                                    if tc.tick_count() % 5 == 0 {
+                                        drop(tc);
+                                        room.persist_time().await;
+                                    }
+                                }
+                            }
                         }
                         None => {
                             // No time control configured for this room
