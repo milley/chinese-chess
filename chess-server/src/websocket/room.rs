@@ -1,11 +1,37 @@
 use std::sync::Arc;
 
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::db::repositories::game_repo::GameRepository;
 use crate::websocket::client::Client;
 use crate::websocket::message::ServerMessage;
+
+/// A structured entry for each move in the game's move history.
+/// Stored as a JSON array in the `move_history` DB column, enabling
+/// full game replay and bug reproduction with per-move context.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MoveEntry {
+    /// UCI move string e.g. "b0-c2"
+    #[serde(rename = "move")]
+    pub mv: String,
+    /// Which color made the move: "red" or "black"
+    pub color: String,
+    /// Board state (FEN) after the move
+    pub fen: String,
+    /// Whether this move delivers check
+    pub is_check: bool,
+    /// Seconds the player spent on this move (None if no time control)
+    pub time_spent: Option<i32>,
+    /// Red's remaining time after the move (seconds)
+    pub red_time: Option<i32>,
+    /// Black's remaining time after the move (seconds)
+    pub black_time: Option<i32>,
+    /// ISO 8601 UTC timestamp of when the move was made
+    pub timestamp: String,
+}
 
 /// 走棋结果
 pub struct MoveResult {
@@ -14,7 +40,7 @@ pub struct MoveResult {
     pub is_game_over: bool,
     pub result: Option<String>,
     pub end_reason: Option<String>,
-    pub move_history_uci: Vec<String>,
+    pub move_history: Vec<MoveEntry>,
 }
 
 /// 游戏房间
@@ -33,6 +59,8 @@ pub struct GameRoom {
     time_control: Arc<RwLock<Option<chess_engine::TimeControl>>>,
     /// 和棋请求状态
     draw_offer: Arc<RwLock<Option<chess_engine::Color>>>,
+    /// 结构化走法记录 (每步含用时、剩余时间、时间戳)
+    move_log: Arc<RwLock<Vec<MoveEntry>>>,
     /// 数据库仓库
     game_repo: GameRepository,
 }
@@ -63,6 +91,7 @@ impl GameRoom {
             spectators: Arc::new(RwLock::new(Vec::new())),
             time_control: Arc::new(RwLock::new(tc)),
             draw_offer: Arc::new(RwLock::new(None)),
+            move_log: Arc::new(RwLock::new(Vec::new())),
             game_repo,
         }
     }
@@ -103,6 +132,7 @@ impl GameRoom {
             spectators: Arc::new(RwLock::new(Vec::new())),
             time_control: Arc::new(RwLock::new(tc)),
             draw_offer: Arc::new(RwLock::new(None)),
+            move_log: Arc::new(RwLock::new(Vec::new())),
             game_repo,
         }
     }
@@ -179,20 +209,23 @@ impl GameRoom {
             (None, None)
         };
 
-        // Update time control: reset move_elapsed for the player who just moved
+        // Update time control: reset move_elapsed for the player who just moved.
+        // Capture the elapsed time before it's reset.
         // This is done while still holding the game_state write lock to prevent
         // inconsistency between game state and time state (e.g., tick_time running
         // between the two locks and seeing stale move_elapsed).
-        {
+        let time_spent = {
             let mut tc = self.time_control.write().await;
             if let Some(ref mut tc) = *tc {
-                tc.on_move_made(player_color);
+                Some(tc.on_move_made(player_color))
+            } else {
+                None
             }
-        }
+        };
 
         drop(state);
 
-        // Get current time state for MoveMade message
+        // Get current time state for MoveMade message and MoveEntry
         let (red_time, black_time) = {
             let tc = self.time_control.read().await;
             match tc.as_ref() {
@@ -228,10 +261,30 @@ impl GameRoom {
         // Persist time to DB after each move
         self.persist_time().await;
 
-        // Collect move history as UCI strings
-        let move_history_uci = {
-            let state = self.game_state.read().await;
-            state.history().iter().map(|(m, _)| m.to_uci()).collect()
+        // Build structured move entry and append to the in-memory log
+        let color_str = match player_color {
+            chess_engine::Color::Red => "red",
+            chess_engine::Color::Black => "black",
+        };
+        let entry = MoveEntry {
+            mv: format!("{}-{}", from, to),
+            color: color_str.to_string(),
+            fen: fen.clone(),
+            is_check,
+            time_spent,
+            red_time: red_time.map(|t| t as i32),
+            black_time: black_time.map(|t| t as i32),
+            timestamp: Utc::now().to_rfc3339(),
+        };
+        {
+            let mut log = self.move_log.write().await;
+            log.push(entry);
+        }
+
+        // Return the full move history as structured entries
+        let move_history = {
+            let log = self.move_log.read().await;
+            log.clone()
         };
 
         Ok(MoveResult {
@@ -240,7 +293,7 @@ impl GameRoom {
             is_game_over,
             result,
             end_reason,
-            move_history_uci,
+            move_history,
         })
     }
 
@@ -380,13 +433,13 @@ impl GameRoom {
         let color = self.player_color(user_id).await?;
 
         // Atomically check game-over + resign under one write lock
-        let (is_over, already_over) = {
+        let already_over = {
             let mut state = self.game_state.write().await;
             if state.is_game_over() {
-                (true, true)
+                true
             } else {
                 state.resign(color);
-                (true, false)
+                false
             }
         };
 
@@ -616,5 +669,13 @@ impl GameRoom {
     /// Get a read guard on the time control (for external inspection like tick_count).
     pub async fn time_control_read(&self) -> tokio::sync::RwLockReadGuard<'_, Option<chess_engine::TimeControl>> {
         self.time_control.read().await
+    }
+
+    /// Serialize the in-memory move log to a JSON string.
+    /// Used by the timeout checker and other non-move game-end paths to preserve
+    /// existing move history when writing to the DB.
+    pub async fn move_history_json(&self) -> String {
+        let log = self.move_log.read().await;
+        serde_json::to_string(&*log).unwrap_or_else(|_| "[]".to_string())
     }
 }

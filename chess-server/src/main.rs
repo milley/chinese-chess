@@ -100,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/games", post(handlers::game_handler::create_game))
         .route("/api/games/{id}", get(handlers::game_handler::get_game))
         .route("/api/games/{id}", delete(handlers::game_handler::delete_game))
+        .route("/api/games/{id}/moves", get(handlers::game_handler::get_game_moves))
         .route("/api/games", get(handlers::game_handler::list_games))
         .route("/api/games/{id}/join", post(handlers::game_handler::join_game))
         // AI 和走法路由

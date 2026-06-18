@@ -30,7 +30,7 @@ pub async fn join_game(
     user_repo: &crate::db::repositories::user_repo::UserRepository,
     game_id: Uuid,
     joining_user_id: Uuid,
-    joining_username: String,
+    _joining_username: String,
 ) -> Result<GameInfo, AppError> {
     let game = game_repo.find_by_id(game_id).await?
         .ok_or(AppError::NotFound("Game not found".into()))?;

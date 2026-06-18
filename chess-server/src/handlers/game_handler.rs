@@ -8,6 +8,7 @@ use crate::db::models::*;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
 use crate::services::game_service;
+use crate::websocket::room::MoveEntry;
 use crate::AppState;
 
 /// POST /api/games — 创建对局
@@ -84,6 +85,19 @@ pub async fn delete_game(
     // Clean up in-memory room to prevent zombie rooms
     state.room_manager.remove_room(id).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// GET /api/games/{id}/moves — 返回结构化走法记录 (用于调试回溯)
+pub async fn get_game_moves(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<MoveEntry>>, AppError> {
+    let game = state.game_repo.find_by_id(id).await?
+        .ok_or(AppError::NotFound("Game not found".into()))?;
+    let moves: Vec<MoveEntry> = game.move_history
+        .and_then(|h| serde_json::from_str(&h).ok())
+        .unwrap_or_default();
+    Ok(Json(moves))
 }
 
 /// 构建GameInfo响应 (共用逻辑)

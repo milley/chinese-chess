@@ -206,15 +206,18 @@ impl TimeControl {
 
     /// Called after a successful move. Resets the moving player's move_elapsed.
     /// In byoyomi phase, this effectively resets the byoyomi countdown for the next move.
-    pub fn on_move_made(&mut self, side_that_moved: Color) {
+    /// Returns the number of seconds the player spent on this move (move_elapsed before reset).
+    pub fn on_move_made(&mut self, side_that_moved: Color) -> i32 {
         if !self.active {
-            return;
+            return 0;
         }
         let player = match side_that_moved {
             Color::Red => &mut self.red,
             Color::Black => &mut self.black,
         };
+        let elapsed = player.move_elapsed;
         player.move_elapsed = 0;
+        elapsed
     }
 
     /// Get the effective remaining time for a player (for display).
@@ -421,6 +424,31 @@ mod tests {
         // Move made resets move_elapsed
         tc.on_move_made(Color::Red);
         assert_eq!(tc.red.move_elapsed, 0);
+    }
+
+    #[test]
+    fn test_on_move_made_returns_elapsed() {
+        let mut tc = TimeControl::new(Some(100), None, None);
+        tc.activate();
+
+        // Tick 7 times for Red
+        for _ in 0..7 {
+            tc.tick(Color::Red);
+        }
+        assert_eq!(tc.red.move_elapsed, 7);
+
+        // on_move_made should return the elapsed time before resetting
+        let elapsed = tc.on_move_made(Color::Red);
+        assert_eq!(elapsed, 7);
+        assert_eq!(tc.red.move_elapsed, 0);
+
+        // When not active, returns 0
+        let mut tc2 = TimeControl::new(Some(100), None, None);
+        // NOT activated
+        tc2.red.move_elapsed = 5;
+        let elapsed2 = tc2.on_move_made(Color::Red);
+        assert_eq!(elapsed2, 0); // not active, so returns 0
+        assert_eq!(tc2.red.move_elapsed, 5); // not reset either
     }
 
     #[test]

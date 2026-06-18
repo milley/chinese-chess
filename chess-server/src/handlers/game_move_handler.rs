@@ -48,7 +48,7 @@ pub async fn make_move(
             Some("draw") => ("draw", result.end_reason.as_deref().unwrap_or("draw")),
             _ => ("draw", "unknown"),
         };
-        let moves_json = serde_json::to_string(&result.move_history_uci).unwrap_or("[]".into());
+        let moves_json = serde_json::to_string(&result.move_history).unwrap_or("[]".into());
 
         elo_service::finish_game_with_elo(
             &state.game_repo,
@@ -61,7 +61,7 @@ pub async fn make_move(
             &moves_json,
         ).await?;
     } else {
-        let moves_json = serde_json::to_string(&result.move_history_uci).unwrap_or("[]".into());
+        let moves_json = serde_json::to_string(&result.move_history).unwrap_or("[]".into());
         state.game_repo.update_fen(id, &result.fen, &moves_json).await?;
     }
 

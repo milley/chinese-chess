@@ -104,7 +104,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                     Some("draw") => ("draw", move_result.end_reason.as_deref().unwrap_or("draw")),
                                                     _ => ("draw", "unknown"),
                                                 };
-                                                let moves_json = serde_json::to_string(&move_result.move_history_uci).unwrap_or("[]".into());
+                                                let moves_json = serde_json::to_string(&move_result.move_history).unwrap_or("[]".into());
                                                 let _ = crate::services::elo_service::finish_game_with_elo(
                                                     &state.game_repo,
                                                     &state.user_repo,
@@ -116,7 +116,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                     &moves_json,
                                                 ).await;
                                             } else {
-                                                let moves_json = serde_json::to_string(&move_result.move_history_uci).unwrap_or("[]".into());
+                                                let moves_json = serde_json::to_string(&move_result.move_history).unwrap_or("[]".into());
                                                 let _ = state.game_repo.update_fen(gid, &move_result.fen, &moves_json).await;
                                             }
                                         }
@@ -217,6 +217,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                         if let Some(game) = game {
                                             let fen = room.fen().await;
+                                            let moves_json = game.move_history.as_deref().unwrap_or("[]");
                                             let _ = crate::services::elo_service::finish_game_with_elo(
                                                 &state.game_repo,
                                                 &state.user_repo,
@@ -225,7 +226,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                 &result_str,
                                                 &reason_str,
                                                 &fen,
-                                                "[]",
+                                                moves_json,
                                             ).await;
                                         }
                                     }
@@ -244,6 +245,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                         if let Some(game) = game {
                                             let fen = room.fen().await;
+                                            let moves_json = game.move_history.as_deref().unwrap_or("[]");
                                             let _ = crate::services::elo_service::finish_game_with_elo(
                                                 &state.game_repo,
                                                 &state.user_repo,
@@ -252,7 +254,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                 &result_str,
                                                 &reason_str,
                                                 &fen,
-                                                "[]",
+                                                moves_json,
                                             ).await;
                                         }
                                     }
@@ -284,6 +286,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                             if let Some(game) = game {
                                                 let fen = room.fen().await;
+                                                let moves_json = game.move_history.as_deref().unwrap_or("[]");
                                                 let _ = crate::services::elo_service::finish_game_with_elo(
                                                     &state.game_repo,
                                                     &state.user_repo,
@@ -292,7 +295,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                     &result_str,
                                                     &reason_str,
                                                     &fen,
-                                                    "[]",
+                                                    moves_json,
                                                 ).await;
                                             }
                                         }
@@ -327,6 +330,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     let game = state.game_repo.find_by_id(*gid).await.ok().flatten();
                     if let Some(game) = game {
                         let fen = room.fen().await;
+                        let moves_json = game.move_history.as_deref().unwrap_or("[]");
                         let _ = crate::services::elo_service::finish_game_with_elo(
                             &state.game_repo,
                             &state.user_repo,
@@ -335,7 +339,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             &result_str,
                             &reason_str,
                             &fen,
-                            "[]",
+                            moves_json,
                         ).await;
                     }
                 }

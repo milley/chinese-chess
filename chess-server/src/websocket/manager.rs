@@ -99,11 +99,13 @@ impl RoomManager {
         room.leave(user_id).await
     }
 
-    /// 客户端断连
-    pub async fn handle_disconnect(&self, game_id: Uuid, user_id: Uuid) {
-        if let Ok(room) = self.get_or_create_room(game_id).await {
-            room.handle_disconnect(user_id).await;
-        }
+    /// 客户端断连. Returns the disconnect result if the room exists.
+    /// Ok(Some((game_id, result_str, reason_str))) = game ended by disconnect
+    /// Ok(None) = game already over or player was spectator
+    /// Err = room not found or player not in room
+    pub async fn handle_disconnect(&self, game_id: Uuid, user_id: Uuid) -> Result<Option<(String, String, String)>, String> {
+        let room = self.get_or_create_room(game_id).await?;
+        room.handle_disconnect(user_id).await
     }
 
     /// Remove a room from the in-memory map (used when a game is deleted via REST).
@@ -156,8 +158,10 @@ impl RoomManager {
                             };
 
                             // Update DB (idempotent: WHERE status != 'finished')
+                            // Preserve existing move history from the in-memory log
+                            let moves_json = room.move_history_json().await;
                             let result = game_repo.finish_game(
-                                game_id, result_str, reason_str, &fen, "[]"
+                                game_id, result_str, reason_str, &fen, &moves_json
                             ).await;
 
                             // Only broadcast GameOver if we were the first to finish the game
@@ -193,12 +197,13 @@ impl RoomManager {
                             // The server is authoritative — TimeUpdate broadcasts every second
                             // ensure clients stay in sync even if DB writes are less frequent.
                             {
-                                let tc = room.time_control_read().await;
-                                if let Some(ref tc) = *tc {
-                                    if tc.tick_count() % 5 == 0 {
-                                        drop(tc);
-                                        room.persist_time().await;
-                                    }
+                                let should_persist = {
+                                    let tc = room.time_control_read().await;
+                                    tc.as_ref().map_or(false, |tc| tc.tick_count() % 5 == 0)
+                                };
+                                // Lock is released before persist_time, which acquires its own lock
+                                if should_persist {
+                                    room.persist_time().await;
                                 }
                             }
                         }
