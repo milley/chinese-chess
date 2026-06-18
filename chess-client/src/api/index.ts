@@ -17,6 +17,18 @@ import type {
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
+// Lazy-initialized store reference to avoid circular dependency.
+// The 401 interceptor needs the user store for proper logout cleanup
+// (Pinia store + WS disconnect), but importing the store directly at
+// module level creates a circular dependency (store -> api -> store).
+let _logoutFn: (() => void) | null = null;
+
+/// Register the logout function from the user store.
+/// Called once after the store is created.
+export function registerLogoutFn(fn: () => void) {
+  _logoutFn = fn;
+}
+
 class ApiService {
   private client: AxiosInstance;
 
@@ -38,8 +50,16 @@ class ApiService {
       (response) => response,
       (error) => {
         if (error.response?.status === 401) {
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
+          // Use the user store's logout function for proper cleanup
+          // (clears Pinia state, disconnects WebSocket) instead of
+          // raw localStorage + window.location.href which bypasses both.
+          if (_logoutFn) {
+            _logoutFn();
+          } else {
+            // Fallback if store not yet registered (shouldn't happen in normal flow)
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+          }
           window.location.href = '/login';
         }
         return Promise.reject(error);

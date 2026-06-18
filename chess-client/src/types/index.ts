@@ -189,6 +189,11 @@ export interface WsOpponentDisconnectedMessage {
   game_id: string;
 }
 
+export interface WsOpponentReconnectedMessage {
+  type: 'opponent_reconnected';
+  game_id: string;
+}
+
 export interface WsDrawOfferedMessage {
   type: 'draw_offered';
   game_id: string;
@@ -226,6 +231,7 @@ export type WsServerMessage =
   | WsIllegalMoveMessage
   | WsGameOverMessage
   | WsOpponentDisconnectedMessage
+  | WsOpponentReconnectedMessage
   | WsDrawOfferedMessage
   | WsDrawResponseMessage
   | WsTimeUpdateMessage

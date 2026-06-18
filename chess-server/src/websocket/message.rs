@@ -67,6 +67,10 @@ pub enum ServerMessage {
     OpponentDisconnected {
         game_id: String,
     },
+    #[serde(rename = "opponent_reconnected")]
+    OpponentReconnected {
+        game_id: String,
+    },
     #[serde(rename = "draw_offered")]
     DrawOffered {
         game_id: String,

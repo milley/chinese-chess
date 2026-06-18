@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import { api } from '../api';
+import { api, registerLogoutFn } from '../api';
 import { wsService } from '../api/websocket';
 import type { User } from '../types';
 
@@ -10,6 +10,9 @@ export const useUserStore = defineStore('user', () => {
   const isLoggedIn = computed(() => !!token.value);
 
   async function init() {
+    // Register logout function with the API service for the 401 interceptor
+    registerLogoutFn(logout);
+
     if (token.value) {
       try {
         user.value = await api.getCurrentUser();

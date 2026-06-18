@@ -12,12 +12,16 @@ export const useGameStore = defineStore('game', () => {
   const validMoves = ref<string[]>([]);
   const moveHistory = ref<string[]>([]);
   const drawOffered = ref(false);
+  const drawOfferedByMe = ref(false);
   const redTime = ref<number>(0);
   const blackTime = ref<number>(0);
   const redInByoyomi = ref<boolean>(false);
   const blackInByoyomi = ref<boolean>(false);
   const timerInterval = ref<ReturnType<typeof setInterval> | null>(null);
   const errorMessage = ref<string | null>(null);
+  const errorTimeout = ref<ReturnType<typeof setTimeout> | null>(null);
+  const isCheck = ref(false);
+  const opponentDisconnected = ref(false);
 
   const isMyTurn = computed(() => {
     if (!currentGame.value || !playerColor.value) return false;
@@ -25,6 +29,20 @@ export const useGameStore = defineStore('game', () => {
     const sideToMove = fen.split(' ')[1] === 'w' ? 'red' : 'black';
     return sideToMove === playerColor.value;
   });
+
+  /// Show an error message that auto-clears after 5 seconds.
+  /// If another error is already showing, replace it (reset the timer).
+  function showError(message: string) {
+    errorMessage.value = message;
+    // Clear any existing timeout
+    if (errorTimeout.value) {
+      clearTimeout(errorTimeout.value);
+    }
+    errorTimeout.value = setTimeout(() => {
+      errorMessage.value = null;
+      errorTimeout.value = null;
+    }, 5000);
+  }
 
   async function createGame(data: { player_color?: string; time_control?: number; move_time_limit?: number; byoyomi?: number }) {
     const res = await api.createGame(data);
@@ -69,6 +87,16 @@ export const useGameStore = defineStore('game', () => {
       }
     }
 
+    wsService.joinGame(gameId);
+    startLocalTimer();
+  }
+
+  /// Enter spectator mode for a game (no REST joinGame, just load + WS).
+  /// Used when a user clicks "观战" (watch) in the lobby.
+  async function watchGame(gameId: string) {
+    await loadGame(gameId);
+    playerColor.value = null;
+    isSpectator.value = true;
     wsService.joinGame(gameId);
     startLocalTimer();
   }
@@ -150,7 +178,19 @@ export const useGameStore = defineStore('game', () => {
       case 'opponent_joined':
         if (currentGame.value) {
           currentGame.value.status = 'playing';
+          // Update opponent info from the message
+          if (message.opponent) {
+            const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
+            if (message.opponent.id !== userId) {
+              if (playerColor.value === 'red') {
+                currentGame.value.black_player = message.opponent;
+              } else {
+                currentGame.value.red_player = message.opponent;
+              }
+            }
+          }
         }
+        opponentDisconnected.value = false;
         break;
       case 'move_made':
         if (currentGame.value) {
@@ -164,6 +204,14 @@ export const useGameStore = defineStore('game', () => {
             blackTime.value = message.black_time;
           }
         }
+        // Show check indicator
+        isCheck.value = message.is_check;
+        // Auto-clear check indicator after 2 seconds
+        if (message.is_check) {
+          setTimeout(() => {
+            isCheck.value = false;
+          }, 2000);
+        }
         selectedSquare.value = null;
         validMoves.value = [];
         break;
@@ -175,32 +223,52 @@ export const useGameStore = defineStore('game', () => {
         }
         break;
       case 'time_update':
-        // Server-authoritative time update
+        // Server-authoritative time update — overwrite local values.
+        // The local timer only interpolates between these updates.
         redTime.value = message.red_time;
         blackTime.value = message.black_time;
         redInByoyomi.value = message.red_in_byoyomi;
         blackInByoyomi.value = message.black_in_byoyomi;
         break;
       case 'draw_offered':
+        // Draw offer received — the offerer doesn't get this back,
+        // only the opponent receives it.
         drawOffered.value = true;
+        drawOfferedByMe.value = false;
         break;
       case 'draw_response':
         drawOffered.value = false;
+        drawOfferedByMe.value = false;
         break;
       case 'illegal_move':
-        errorMessage.value = message.reason;
+        showError(message.reason);
         break;
       case 'opponent_disconnected':
-        errorMessage.value = '对手已断线';
+        opponentDisconnected.value = true;
+        showError('对手已断线');
+        break;
+      case 'opponent_reconnected':
+        // Handle opponent reconnect notification
+        opponentDisconnected.value = false;
         break;
       case 'error':
-        errorMessage.value = message.message;
+        showError(message.message);
         break;
     }
   }
 
   function startLocalTimer() {
     stopLocalTimer();
+    // Track the last server update timestamp to avoid flicker.
+    // The local timer decrements, but the next TimeUpdate from the server
+    // will overwrite with the authoritative value. To prevent the display
+    // from jumping back up, we skip local decrement if the server update
+    // just arrived (within the last 200ms).
+    let lastServerUpdate = Date.now();
+
+    // Override the time_update handler to track server update time
+    const origHandler = handleWsMessage;
+
     timerInterval.value = setInterval(() => {
       if (!currentGame.value || currentGame.value.status !== 'playing') {
         stopLocalTimer();
@@ -211,16 +279,38 @@ export const useGameStore = defineStore('game', () => {
       // which overwrites these values. This local decrement ensures
       // the display doesn't freeze between server updates.
       const active = currentGame.value.fen.split(' ')[1] === 'w' ? 'red' : 'black';
-      if (active === 'red') {
-        redTime.value = Math.max(0, redTime.value - 1);
-      } else {
-        blackTime.value = Math.max(0, blackTime.value - 1);
+      const now = Date.now();
+      // Only decrement locally if no server update came in the last 800ms
+      // (server sends every 1s, so we get ~200ms overlap where local decrement
+      // provides smooth interpolation, then server overwrites)
+      if (now - lastServerUpdate > 200) {
+        if (active === 'red') {
+          redTime.value = Math.max(0, redTime.value - 1);
+        } else {
+          blackTime.value = Math.max(0, blackTime.value - 1);
+        }
       }
     }, 1000);
+
+    // Patch: listen for time_update to track last server update
+    // We do this via a secondary listener on the WS service
+    const unwatch = wsService.onMessage((msg: WsServerMessage) => {
+      if (msg.type === 'time_update') {
+        const msgGameId = (msg as any).game_id as string | undefined;
+        if (!msgGameId || !currentGame.value || msgGameId === currentGame.value.id) {
+          lastServerUpdate = Date.now();
+        }
+      }
+    });
+    // Store the unsubscribe function for cleanup
+    (timerInterval as any)._unwatch = unwatch;
   }
 
   function stopLocalTimer() {
     if (timerInterval.value) {
+      // Clean up the secondary WS listener
+      const unwatch = (timerInterval as any)._unwatch;
+      if (unwatch) unwatch();
       clearInterval(timerInterval.value);
       timerInterval.value = null;
     }
@@ -235,6 +325,8 @@ export const useGameStore = defineStore('game', () => {
   function offerDraw() {
     if (currentGame.value) {
       wsService.offerDraw(currentGame.value.id);
+      drawOffered.value = true;
+      drawOfferedByMe.value = true;
     }
   }
 
@@ -242,6 +334,7 @@ export const useGameStore = defineStore('game', () => {
     if (currentGame.value) {
       wsService.respondDraw(currentGame.value.id, accept);
       drawOffered.value = false;
+      drawOfferedByMe.value = false;
     }
   }
 
@@ -249,11 +342,21 @@ export const useGameStore = defineStore('game', () => {
   /// Resets auxiliary state and stops the local timer.
   function cleanup() {
     stopLocalTimer();
+    if (errorTimeout.value) {
+      clearTimeout(errorTimeout.value);
+      errorTimeout.value = null;
+    }
     selectedSquare.value = null;
     validMoves.value = [];
     moveHistory.value = [];
     drawOffered.value = false;
+    drawOfferedByMe.value = false;
     errorMessage.value = null;
+    isCheck.value = false;
+    opponentDisconnected.value = false;
+    currentGame.value = null;
+    playerColor.value = null;
+    isSpectator.value = false;
   }
 
   // Register WS message listener
@@ -263,14 +366,17 @@ export const useGameStore = defineStore('game', () => {
   wsService.onReconnect(() => {
     if (currentGame.value && currentGame.value.status !== 'finished') {
       wsService.joinGame(currentGame.value.id);
+      // Reload full game state from server on reconnect
+      loadGame(currentGame.value.id);
     }
   });
 
   return {
     currentGame, playerColor, isSpectator, selectedSquare, validMoves,
-    moveHistory, drawOffered, redTime, blackTime, redInByoyomi, blackInByoyomi,
-    errorMessage, isMyTurn,
-    createGame, joinGame, joinWsRoom, loadGame, selectSquare, makeMove,
+    moveHistory, drawOffered, drawOfferedByMe, redTime, blackTime,
+    redInByoyomi, blackInByoyomi, errorMessage, isMyTurn, isCheck,
+    opponentDisconnected,
+    createGame, joinGame, joinWsRoom, watchGame, loadGame, selectSquare, makeMove,
     resign, offerDraw, respondDraw, cleanup,
   };
 });

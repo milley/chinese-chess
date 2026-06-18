@@ -58,9 +58,15 @@ class WebSocketService {
           setTimeout(() => {
             const storedToken = localStorage.getItem('token');
             if (storedToken) {
-              this.connect(storedToken);
+              this.connect(storedToken).catch((err) => {
+                console.error('WebSocket reconnection failed:', err);
+                // Reconnection failed silently — the next onclose will trigger another attempt
+                // if attempts remain. No user action needed.
+              });
             }
           }, this.reconnectDelay * this.reconnectAttempts);
+        } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+          console.error('WebSocket: max reconnection attempts reached');
         }
       };
 

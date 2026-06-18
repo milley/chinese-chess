@@ -172,7 +172,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         };
                                         tx.send(serde_json::to_string(&joined_msg).unwrap_or_default()).ok();
 
-                                        // Notify opponent if they are already in the room
+                                        // Notify opponent
                                         let opponent_user_id = match color {
                                             chess_engine::Color::Red => game.black_player_id,
                                             chess_engine::Color::Black => game.red_player_id,
@@ -181,14 +181,24 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             // Check if opponent is actually connected in the room
                                             let opponent_present = room.has_player(opp_id).await;
                                             if opponent_present {
-                                                if let Ok(Some(opp_user)) = state.user_repo.find_by_id(opp_id).await {
-                                                    let opp_info = crate::db::models::UserInfo::from(opp_user);
-                                                    let opp_joined_msg = ServerMessage::OpponentJoined {
+                                                if was_waiting {
+                                                    // First time opponent sees this player — send OpponentJoined
+                                                    if let Ok(Some(opp_user)) = state.user_repo.find_by_id(opp_id).await {
+                                                        let opp_info = crate::db::models::UserInfo::from(opp_user);
+                                                        let opp_joined_msg = ServerMessage::OpponentJoined {
+                                                            game_id: game_id.clone(),
+                                                            opponent: opp_info,
+                                                            fen: fen.clone(),
+                                                        };
+                                                        room.broadcast_to_opponent(color, &opp_joined_msg).await;
+                                                    }
+                                                } else {
+                                                    // Game is already playing — this is a reconnection.
+                                                    // Notify opponent that this player has reconnected.
+                                                    let reconnected_msg = ServerMessage::OpponentReconnected {
                                                         game_id: game_id.clone(),
-                                                        opponent: opp_info,
-                                                        fen: fen.clone(),
                                                     };
-                                                    room.broadcast_to_opponent(color, &opp_joined_msg).await;
+                                                    room.broadcast_to_opponent(color, &reconnected_msg).await;
                                                 }
                                             }
                                         }

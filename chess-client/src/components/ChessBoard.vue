@@ -5,6 +5,7 @@
     :height="canvasHeight * dpr"
     :style="{ width: canvasWidth + 'px', height: canvasHeight + 'px' }"
     @click="handleClick"
+    @touchstart.prevent="handleTouch"
   />
 </template>
 
@@ -16,6 +17,7 @@ const props = defineProps<{
   playerColor: 'red' | 'black' | null;
   selectedSquare: string | null;
   validMoves: string[];
+  isCheck?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -60,6 +62,19 @@ function parseFen(fen: string): Map<string, { type: string; color: 'red' | 'blac
     }
   }
   return pieces;
+}
+
+/// Find the king position for the given color from the FEN.
+function findKing(fen: string, color: 'red' | 'black'): { col: number; row: number } | null {
+  const pieces = parseFen(fen);
+  const kingName = color === 'red' ? '帅' : '将';
+  for (const [key, piece] of pieces) {
+    if (piece.type === kingName && piece.color === color) {
+      const [col, row] = key.split(',').map(Number);
+      return { col, row };
+    }
+  }
+  return null;
 }
 
 function getDisplayPosition(col: number, row: number): { x: number; y: number } {
@@ -148,11 +163,27 @@ function draw() {
     ctx.fillText('汉界', PADDING + 6 * CELL_SIZE, riverY);
   }
 
+  // Determine which king is in check for the check highlight
+  const checkedKingPos = props.isCheck ? findKing(props.fen, getSideToMove(props.fen)) : null;
+
   // Pieces
   const pieces = parseFen(props.fen);
   for (const [key, piece] of pieces) {
     const [col, row] = key.split(',').map(Number);
     const { x, y } = getDisplayPosition(col, row);
+
+    // Check highlight — red glow behind the checked king
+    if (checkedKingPos && col === checkedKingPos.col && row === checkedKingPos.row) {
+      ctx.save();
+      ctx.shadowColor = '#ff0000';
+      ctx.shadowBlur = 15;
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+      ctx.beginPath();
+      ctx.arc(x, y, PIECE_RADIUS + 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     drawPiece(ctx, x, y, piece.type, piece.color);
   }
 
@@ -193,6 +224,12 @@ function draw() {
   }
 
   ctx.restore();
+}
+
+/// Get the side to move from FEN ('w' = red, 'b' = black).
+function getSideToMove(fen: string): 'red' | 'black' {
+  const parts = fen.split(' ');
+  return parts[1] === 'w' ? 'red' : 'black';
 }
 
 function drawPalaceDiagonals(ctx: CanvasRenderingContext2D, c1: number, r1: number, c2: number, r2: number) {
@@ -250,19 +287,19 @@ function parseUci(uci: string): { col: number; row: number } | null {
   return { col, row };
 }
 
-function handleClick(event: MouseEvent) {
+function pixelToPosition(clientX: number, clientY: number): string | null {
   const canvas = canvasRef.value;
-  if (!canvas) return;
+  if (!canvas) return null;
 
   const rect = canvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
 
   // Convert pixel to board position
   let col = Math.round((x - PADDING) / CELL_SIZE);
   let row = Math.round((y - PADDING) / CELL_SIZE);
 
-  if (col < 0 || col > 8 || row < 0 || row > 9) return;
+  if (col < 0 || col > 8 || row < 0 || row > 9) return null;
 
   // If flipped, convert
   if (flip.value) {
@@ -270,12 +307,27 @@ function handleClick(event: MouseEvent) {
     row = 9 - row;
   }
 
-  const position = String.fromCharCode('a'.charCodeAt(0) + col) + row;
-  emit('squareClick', position);
+  return String.fromCharCode('a'.charCodeAt(0) + col) + row;
+}
+
+function handleClick(event: MouseEvent) {
+  const position = pixelToPosition(event.clientX, event.clientY);
+  if (position) emit('squareClick', position);
+}
+
+/// Touch event handler for mobile support.
+/// Uses the first touch point. The `.prevent` modifier on @touchstart
+/// prevents the default scroll/zoom behavior, making the canvas interactive
+/// on touch devices.
+function handleTouch(event: TouchEvent) {
+  if (event.touches.length === 0) return;
+  const touch = event.touches[0];
+  const position = pixelToPosition(touch.clientX, touch.clientY);
+  if (position) emit('squareClick', position);
 }
 
 // Watch for changes and redraw
-watch(() => [props.fen, props.selectedSquare, props.validMoves], draw, { deep: true });
+watch(() => [props.fen, props.selectedSquare, props.validMoves, props.isCheck], draw, { deep: true });
 
 onMounted(() => {
   draw();

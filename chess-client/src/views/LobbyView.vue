@@ -112,8 +112,13 @@ async function joinGame(gameId: string) {
   }
 }
 
-function watchGame(gameId: string) {
-  router.push(`/game/${gameId}`);
+async function watchGame(gameId: string) {
+  try {
+    await gameStore.watchGame(gameId);
+    router.push(`/game/${gameId}`);
+  } catch (err: any) {
+    alert(err.response?.data?.error || '观战失败');
+  }
 }
 
 async function handleCreate() {
