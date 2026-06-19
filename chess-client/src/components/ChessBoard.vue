@@ -11,7 +11,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue';
-import { parseFen, findKing, parseUciPosition, getSideToMove } from '../utils/chess';
+import { parseFen, findKing, parseUciPosition, getSideToMove, getDisplayPosition as getDisplayPositionUtil, pixelToPosition as pixelToPositionUtil, BOARD_COLS, BOARD_ROWS, CELL_SIZE, PADDING } from '../utils/chess';
 
 const props = defineProps<{
   fen: string;
@@ -25,10 +25,6 @@ const emit = defineEmits<{
   (e: 'squareClick', position: string): void;
 }>();
 
-const BOARD_COLS = 9;
-const BOARD_ROWS = 10;
-const CELL_SIZE = 60;
-const PADDING = 40;
 const PIECE_RADIUS = 25;
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -46,16 +42,7 @@ const FEN_TO_NAME: Record<string, string> = {
 };
 
 function getDisplayPosition(col: number, row: number): { x: number; y: number } {
-  if (flip.value) {
-    return {
-      x: PADDING + (8 - col) * CELL_SIZE,
-      y: PADDING + (9 - row) * CELL_SIZE,
-    };
-  }
-  return {
-    x: PADDING + col * CELL_SIZE,
-    y: PADDING + row * CELL_SIZE,
-  };
+  return getDisplayPositionUtil(col, row, flip.value);
 }
 
 function draw() {
@@ -250,19 +237,7 @@ function pixelToPosition(clientX: number, clientY: number): string | null {
   const x = clientX - rect.left;
   const y = clientY - rect.top;
 
-  // Convert pixel to board position
-  let col = Math.round((x - PADDING) / CELL_SIZE);
-  let row = Math.round((y - PADDING) / CELL_SIZE);
-
-  if (col < 0 || col > 8 || row < 0 || row > 9) return null;
-
-  // If flipped, convert
-  if (flip.value) {
-    col = 8 - col;
-    row = 9 - row;
-  }
-
-  return String.fromCharCode('a'.charCodeAt(0) + col) + row;
+  return pixelToPositionUtil(x, y, flip.value);
 }
 
 function handleClick(event: MouseEvent) {
