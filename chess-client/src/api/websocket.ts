@@ -21,6 +21,11 @@ class WebSocketService {
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private wasConnected = false;  // Track if we've ever been connected (to distinguish first connect vs reconnect)
 
+  /** Check if WebSocket is currently connected and ready to send messages. */
+  get isConnected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
   connect(token: string): Promise<void> {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(WS_URL);

@@ -72,7 +72,7 @@ export const useGameStore = defineStore('game', () => {
   /// Join WS room only (no REST joinGame call).
   /// Used by GameView on mount for direct URL / refresh — the player
   /// is already joined via DB, we just need the real-time WS channel.
-  function joinWsRoom(gameId: string) {
+  async function joinWsRoom(gameId: string) {
     if (!currentGame.value) return;
 
     // Determine player color from game data if not already set
@@ -85,6 +85,20 @@ export const useGameStore = defineStore('game', () => {
       } else {
         playerColor.value = null;
         isSpectator.value = true;
+      }
+    }
+
+    // Ensure WS is connected before joining the room.
+    // On page refresh / direct URL access, the WS may not be connected yet.
+    if (!wsService.isConnected) {
+      const token = localStorage.getItem('token');
+      if (token) {
+        try {
+          await wsService.connect(token);
+        } catch {
+          // WS connection failed — real-time updates won't work,
+          // but the user can still see the board via REST data.
+        }
       }
     }
 
@@ -111,6 +125,7 @@ export const useGameStore = defineStore('game', () => {
 
   async function selectSquare(position: string) {
     if (!currentGame.value || isSpectator.value || !isMyTurn.value) return;
+    if (currentGame.value.status !== 'playing') return;
 
     // If clicking a valid move target, execute the move
     if (validMoves.value.includes(position) && selectedSquare.value) {

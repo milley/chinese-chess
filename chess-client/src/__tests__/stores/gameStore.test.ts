@@ -3,6 +3,34 @@ import { useGameStore } from '../../stores/game';
 import { createTestingPinia } from '@pinia/testing';
 import type { Game } from '../../types';
 
+// Mock API module
+vi.mock('../../api', () => ({
+  api: {
+    getValidMoves: vi.fn().mockResolvedValue(['a7', 'c7', 'b8']),
+    getGame: vi.fn().mockResolvedValue(null),
+  },
+}));
+
+// Mock WS module
+vi.mock('../../api/websocket', () => ({
+  wsService: {
+    isConnected: true,
+    joinGame: vi.fn(),
+    makeMove: vi.fn(),
+    offerDraw: vi.fn(),
+    respondDraw: vi.fn(),
+    resign: vi.fn(),
+    leaveGame: vi.fn(),
+    onMessage: vi.fn().mockReturnValue(() => {}),
+    onConnect: vi.fn().mockReturnValue(() => {}),
+    onDisconnect: vi.fn().mockReturnValue(() => {}),
+    onReconnect: vi.fn().mockReturnValue(() => {}),
+    connect: vi.fn().mockResolvedValue(undefined),
+    disconnect: vi.fn(),
+    send: vi.fn(),
+  },
+}));
+
 const INITIAL_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1';
 
 function createMockGame(overrides: Partial<Game> = {}): Game {
@@ -103,6 +131,48 @@ describe('gameStore', () => {
       store.respondDraw(true);
       expect(store.drawOffered).toBe(false);
       expect(store.drawOfferedByMe).toBe(false);
+    });
+  });
+
+  describe('selectSquare', () => {
+    it('does not select piece when game status is waiting', async () => {
+      store.currentGame = createMockGame({ status: 'waiting' });
+      store.playerColor = 'red';
+
+      await store.selectSquare('b7');
+
+      expect(store.selectedSquare).toBeNull();
+      expect(store.validMoves).toEqual([]);
+    });
+
+    it('does not select piece when game status is finished', async () => {
+      store.currentGame = createMockGame({ status: 'finished' });
+      store.playerColor = 'red';
+
+      await store.selectSquare('b7');
+
+      expect(store.selectedSquare).toBeNull();
+      expect(store.validMoves).toEqual([]);
+    });
+
+    it('selects piece and fetches valid moves when status is playing', async () => {
+      store.currentGame = createMockGame();
+      store.playerColor = 'red';
+
+      await store.selectSquare('b7');
+
+      expect(store.selectedSquare).toBe('b7');
+      expect(store.validMoves).toEqual(['a7', 'c7', 'b8']);
+    });
+
+    it('does not select piece when not my turn', async () => {
+      const blackFen = INITIAL_FEN.replace(' w ', ' b ');
+      store.currentGame = createMockGame({ fen: blackFen });
+      store.playerColor = 'red';
+
+      await store.selectSquare('b7');
+
+      expect(store.selectedSquare).toBeNull();
     });
   });
 });

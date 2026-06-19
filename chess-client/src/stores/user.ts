@@ -16,6 +16,13 @@ export const useUserStore = defineStore('user', () => {
     if (token.value) {
       try {
         user.value = await api.getCurrentUser();
+        // Reconnect WebSocket on page refresh / direct URL access.
+        // Without this, joinWsRoom and makeMove messages are silently dropped.
+        try {
+          await wsService.connect(token.value);
+        } catch {
+          // WS connection failed, but user is still logged in
+        }
       } catch {
         logout();
       }
