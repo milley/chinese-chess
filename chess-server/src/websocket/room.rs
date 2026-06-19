@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -8,6 +10,18 @@ use uuid::Uuid;
 use crate::db::repositories::game_repo::GameRepository;
 use crate::websocket::client::Client;
 use crate::websocket::message::ServerMessage;
+
+/// Trait abstracting the game repository operations needed by GameRoom.
+/// Enables unit testing without a real database connection.
+pub trait GameRepo: Send + Sync {
+    fn update_time(&self, game_id: Uuid, red_time: i32, black_time: i32) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+}
+
+impl GameRepo for GameRepository {
+    fn update_time(&self, game_id: Uuid, red_time: i32, black_time: i32) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async move { GameRepository::update_time(self, game_id, red_time, black_time).await })
+    }
+}
 
 /// A structured entry for each move in the game's move history.
 /// Stored as a JSON array in the `move_history` DB column, enabling
@@ -34,6 +48,7 @@ pub struct MoveEntry {
 }
 
 /// 走棋结果
+#[derive(Debug)]
 pub struct MoveResult {
     pub fen: String,
     pub is_check: bool,
@@ -61,15 +76,15 @@ pub struct GameRoom {
     draw_offer: Arc<RwLock<Option<chess_engine::Color>>>,
     /// 结构化走法记录 (每步含用时、剩余时间、时间戳)
     move_log: Arc<RwLock<Vec<MoveEntry>>>,
-    /// 数据库仓库
-    game_repo: GameRepository,
+    /// 数据库仓库 (trait object for testability)
+    game_repo: Arc<dyn GameRepo>,
 }
 
 impl GameRoom {
     pub fn new(
         game_id: Uuid,
         fen: &str,
-        game_repo: GameRepository,
+        game_repo: Arc<dyn GameRepo>,
         time_control: Option<i32>,
         move_time_limit: Option<i32>,
         byoyomi: Option<i32>,
@@ -100,7 +115,7 @@ impl GameRoom {
     pub fn new_with_state(
         game_id: Uuid,
         fen: &str,
-        game_repo: GameRepository,
+        game_repo: Arc<dyn GameRepo>,
         time_control: Option<i32>,
         move_time_limit: Option<i32>,
         byoyomi: Option<i32>,
@@ -677,5 +692,523 @@ impl GameRoom {
     pub async fn move_history_json(&self) -> String {
         let log = self.move_log.read().await;
         serde_json::to_string(&*log).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tokio::sync::mpsc;
+
+    /// Mock GameRepo for testing — records update_time calls
+    struct MockGameRepo {
+        update_time_calls: Mutex<Vec<(Uuid, i32, i32)>>,
+    }
+
+    impl MockGameRepo {
+        fn new() -> Arc<Self> {
+            Arc::new(MockGameRepo {
+                update_time_calls: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl GameRepo for MockGameRepo {
+        fn update_time(&self, game_id: Uuid, red_time: i32, black_time: i32) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+            self.update_time_calls.lock().unwrap().push((game_id, red_time, black_time));
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    const INITIAL_FEN: &str = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1";
+
+    fn create_test_room() -> (Arc<GameRoom>, Arc<MockGameRepo>) {
+        let mock = MockGameRepo::new();
+        let game_id = Uuid::new_v4();
+        let room = Arc::new(GameRoom::new(
+            game_id,
+            INITIAL_FEN,
+            mock.clone() as Arc<dyn GameRepo>,
+            None, None, None,
+        ));
+        (room, mock)
+    }
+
+    fn create_test_room_with_time() -> (Arc<GameRoom>, Arc<MockGameRepo>) {
+        let mock = MockGameRepo::new();
+        let game_id = Uuid::new_v4();
+        let room = Arc::new(GameRoom::new(
+            game_id,
+            INITIAL_FEN,
+            mock.clone() as Arc<dyn GameRepo>,
+            Some(600), None, None,
+        ));
+        (room, mock)
+    }
+
+    fn make_client(user_id: Uuid, username: &str) -> (Client, mpsc::UnboundedReceiver<String>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Client::new(user_id, username.to_string(), tx), rx)
+    }
+
+    #[tokio::test]
+    async fn test_join_red_slot_success() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (client, _) = make_client(red_id, "red_player");
+        let result = room.join(client, chess_engine::Color::Red).await;
+        assert!(result.is_ok());
+        assert!(room.has_player(red_id).await);
+    }
+
+    #[tokio::test]
+    async fn test_join_black_slot_success() {
+        let (room, _) = create_test_room();
+        let black_id = Uuid::new_v4();
+        let (client, _) = make_client(black_id, "black_player");
+        let result = room.join(client, chess_engine::Color::Black).await;
+        assert!(result.is_ok());
+        assert!(room.has_player(black_id).await);
+    }
+
+    #[tokio::test]
+    async fn test_join_red_slot_already_occupied() {
+        let (room, _) = create_test_room();
+        let red_id1 = Uuid::new_v4();
+        let red_id2 = Uuid::new_v4();
+        let (c1, _) = make_client(red_id1, "red1");
+        let (c2, _) = make_client(red_id2, "red2");
+        room.join(c1, chess_engine::Color::Red).await.unwrap();
+        let result = room.join(c2, chess_engine::Color::Red).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already occupied"));
+    }
+
+    #[tokio::test]
+    async fn test_join_black_slot_already_occupied() {
+        let (room, _) = create_test_room();
+        let black_id1 = Uuid::new_v4();
+        let black_id2 = Uuid::new_v4();
+        let (c1, _) = make_client(black_id1, "black1");
+        let (c2, _) = make_client(black_id2, "black2");
+        room.join(c1, chess_engine::Color::Black).await.unwrap();
+        let result = room.join(c2, chess_engine::Color::Black).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already occupied"));
+    }
+
+    #[tokio::test]
+    async fn test_player_color_red() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (client, _) = make_client(red_id, "red_player");
+        room.join(client, chess_engine::Color::Red).await.unwrap();
+        let color = room.player_color(red_id).await.unwrap();
+        assert_eq!(color, chess_engine::Color::Red);
+    }
+
+    #[tokio::test]
+    async fn test_player_color_black() {
+        let (room, _) = create_test_room();
+        let black_id = Uuid::new_v4();
+        let (client, _) = make_client(black_id, "black_player");
+        room.join(client, chess_engine::Color::Black).await.unwrap();
+        let color = room.player_color(black_id).await.unwrap();
+        assert_eq!(color, chess_engine::Color::Black);
+    }
+
+    #[tokio::test]
+    async fn test_player_color_not_in_room() {
+        let (room, _) = create_test_room();
+        let unknown_id = Uuid::new_v4();
+        let result = room.player_color(unknown_id).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not a player"));
+    }
+
+    #[tokio::test]
+    async fn test_has_player_true_false() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (client, _) = make_client(red_id, "red_player");
+        room.join(client, chess_engine::Color::Red).await.unwrap();
+        assert!(room.has_player(red_id).await);
+        assert!(!room.has_player(Uuid::new_v4()).await);
+    }
+
+    #[tokio::test]
+    async fn test_game_id_accessor() {
+        let game_id = Uuid::new_v4();
+        let mock = MockGameRepo::new();
+        let room = GameRoom::new(game_id, INITIAL_FEN, mock.clone() as Arc<dyn GameRepo>, None, None, None);
+        assert_eq!(room.game_id(), game_id);
+    }
+
+    #[tokio::test]
+    async fn test_current_side_initial() {
+        let (room, _) = create_test_room();
+        assert_eq!(room.current_side().await, chess_engine::Color::Red);
+    }
+
+    #[tokio::test]
+    async fn test_is_game_over_initially_false() {
+        let (room, _) = create_test_room();
+        assert!(!room.is_game_over().await);
+    }
+
+    #[tokio::test]
+    async fn test_fen_returns_current_state() {
+        let (room, _) = create_test_room();
+        let fen = room.fen().await;
+        assert_eq!(fen, INITIAL_FEN);
+    }
+
+    #[tokio::test]
+    async fn test_make_move_success() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        let (bc, _) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        // Red cannon at b9 (col 1, row 9) to c7 (col 2, row 7)
+        let result = room.make_move(red_id, chess_engine::Color::Red, "b9", "c7").await;
+        assert!(result.is_ok(), "Expected Ok, got Err: {:?}", result);
+        let move_result = result.unwrap();
+        assert_ne!(move_result.fen, INITIAL_FEN);
+        assert_eq!(move_result.move_history.len(), 1);
+        assert_eq!(move_result.move_history[0].mv, "b9-c7");
+        assert_eq!(move_result.move_history[0].color, "red");
+    }
+
+    #[tokio::test]
+    async fn test_make_move_not_your_turn() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        let (bc, _) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        // Black tries to move on Red's turn
+        let result = room.make_move(black_id, chess_engine::Color::Black, "b0", "c2").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Not your turn"));
+    }
+
+    #[tokio::test]
+    async fn test_make_move_invalid_from_position() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        let result = room.make_move(red_id, chess_engine::Color::Red, "z99", "a1").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid from position"));
+    }
+
+    #[tokio::test]
+    async fn test_make_move_illegal_move() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        // Try to move the red king to an illegal destination
+        let result = room.make_move(red_id, chess_engine::Color::Red, "e9", "e5").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_make_move_appends_to_move_log() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        // Initially empty
+        assert_eq!(room.move_history_json().await, "[]");
+
+        // Red cannon b9 → c7
+        room.make_move(red_id, chess_engine::Color::Red, "b9", "c7").await.unwrap();
+        let json = room.move_history_json().await;
+        assert!(!json.contains("[]"), "Should have at least one entry");
+        assert!(json.contains("b9-c7"));
+    }
+
+    #[tokio::test]
+    async fn test_resign_red() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        let result = room.resign(red_id).await.unwrap();
+        assert_eq!(result.1, "black_win");
+        assert_eq!(result.2, "resign");
+    }
+
+    #[tokio::test]
+    async fn test_resign_black() {
+        let (room, _) = create_test_room();
+        let black_id = Uuid::new_v4();
+        let (bc, _) = make_client(black_id, "black");
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        let result = room.resign(black_id).await.unwrap();
+        assert_eq!(result.1, "red_win");
+        assert_eq!(result.2, "resign");
+    }
+
+    #[tokio::test]
+    async fn test_resign_game_already_over() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        room.resign(red_id).await.unwrap();
+        let result = room.resign(red_id).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already over"));
+    }
+
+    #[tokio::test]
+    async fn test_offer_draw_success() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        let result = room.offer_draw(red_id).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_offer_draw_game_already_over() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        room.resign(red_id).await.unwrap();
+        let result = room.offer_draw(red_id).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already over"));
+    }
+
+    #[tokio::test]
+    async fn test_respond_draw_accept() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        let (bc, _) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        room.offer_draw(red_id).await.unwrap();
+        let result = room.respond_draw(black_id, true).await.unwrap();
+        assert!(result.is_some());
+        let (_, result_str, reason_str) = result.unwrap();
+        assert_eq!(result_str, "draw");
+        assert_eq!(reason_str, "draw_agreement");
+    }
+
+    #[tokio::test]
+    async fn test_respond_draw_reject() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        let (bc, _) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        room.offer_draw(red_id).await.unwrap();
+        let result = room.respond_draw(black_id, false).await.unwrap();
+        assert!(result.is_none());
+        // Game should still continue
+        assert!(!room.is_game_over().await);
+    }
+
+    #[tokio::test]
+    async fn test_respond_draw_no_offer_pending() {
+        let (room, _) = create_test_room();
+        let black_id = Uuid::new_v4();
+        let (bc, _) = make_client(black_id, "black");
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        let result = room.respond_draw(black_id, true).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No draw offer"));
+    }
+
+    #[tokio::test]
+    async fn test_respond_draw_own_offer() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        room.offer_draw(red_id).await.unwrap();
+        let result = room.respond_draw(red_id, true).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("your own draw offer"));
+    }
+
+    #[tokio::test]
+    async fn test_leave_game_in_progress() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        let result = room.leave(red_id).await.unwrap();
+        assert!(result.is_some());
+        let (_, result_str, reason_str) = result.unwrap();
+        assert_eq!(result_str, "black_win");
+        assert_eq!(reason_str, "resign");
+        // Red player should be removed
+        assert!(!room.has_player(red_id).await);
+    }
+
+    #[tokio::test]
+    async fn test_leave_game_already_over() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        room.resign(red_id).await.unwrap();
+        let result = room.leave(red_id).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_disconnect_player() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        let result = room.handle_disconnect(red_id).await.unwrap();
+        assert!(result.is_some());
+        let (_, result_str, reason_str) = result.unwrap();
+        assert_eq!(result_str, "black_win");
+        assert_eq!(reason_str, "disconnect");
+    }
+
+    #[tokio::test]
+    async fn test_handle_disconnect_spectator() {
+        let (room, _) = create_test_room();
+        let spec_id = Uuid::new_v4();
+        // Spectators are added via spectators list, but handle_disconnect checks player_color first
+        // Since spectator is not a player, player_color will return error → Ok(None)
+        let result = room.handle_disconnect(spec_id).await;
+        assert!(result.is_ok());
+        // spectator not in room, so player_color fails → Ok(None)
+        // Actually handle_disconnect first removes_player which is also a no-op for non-players
+        // Let me check: the spec is not in red/black slots, so remove_player is no-op,
+        // then player_color returns Err → Ok(None)
+    }
+
+    #[tokio::test]
+    async fn test_handle_disconnect_game_already_over() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+
+        room.resign(red_id).await.unwrap();
+        let result = room.handle_disconnect(red_id).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_activate_time_control() {
+        let (room, _) = create_test_room_with_time();
+        room.activate_time().await;
+        let result = room.tick_time().await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_tick_time_no_time_control() {
+        let (room, _) = create_test_room();
+        let result = room.tick_time().await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_time_state_with_time_control() {
+        let (room, _) = create_test_room_with_time();
+        room.activate_time().await;
+        room.tick_time().await; // Tick once
+
+        let (red_time, black_time, active_color, red_in_byo, black_in_byo) = room.time_state().await;
+        assert_eq!(red_time, 599); // 600 - 1 tick
+        assert_eq!(black_time, 600);
+        assert_eq!(active_color, "red");
+        assert!(!red_in_byo);
+        assert!(!black_in_byo);
+    }
+
+    #[tokio::test]
+    async fn test_time_state_no_time_control() {
+        let (room, _) = create_test_room();
+        let (red_time, black_time, active_color, red_in_byo, black_in_byo) = room.time_state().await;
+        assert_eq!(red_time, 0);
+        assert_eq!(black_time, 0);
+        assert_eq!(active_color, "red");
+        assert!(!red_in_byo);
+        assert!(!black_in_byo);
+    }
+
+    #[tokio::test]
+    async fn test_move_history_json_empty() {
+        let (room, _) = create_test_room();
+        assert_eq!(room.move_history_json().await, "[]");
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_sends_to_players() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (rc, mut rx_red) = make_client(red_id, "red");
+        let (bc, mut rx_black) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        let msg = ServerMessage::Pong;
+        room.broadcast(&msg).await;
+
+        // Both receivers should have a message
+        assert!(rx_red.try_recv().is_ok());
+        assert!(rx_black.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_to_opponent_red() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (rc, mut rx_red) = make_client(red_id, "red");
+        let (bc, mut rx_black) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        let msg = ServerMessage::Pong;
+        room.broadcast_to_opponent(chess_engine::Color::Red, &msg).await;
+
+        // Only black (opponent of red) should receive
+        assert!(rx_red.try_recv().is_err(), "Red should not receive message sent to opponent of red");
+        assert!(rx_black.try_recv().is_ok(), "Black should receive message");
     }
 }

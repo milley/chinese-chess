@@ -7,13 +7,13 @@ use uuid::Uuid;
 
 use crate::db::repositories::game_repo::GameRepository;
 use crate::websocket::message::ServerMessage;
-use crate::websocket::room::{GameRoom, MoveResult};
+use crate::websocket::room::{GameRepo, GameRoom, MoveResult};
 
 /// 房间管理器
 pub struct RoomManager {
     /// 活跃房间映射
     rooms: Arc<RwLock<HashMap<Uuid, Arc<GameRoom>>>>,
-    /// 数据库仓库
+    /// 数据库仓库 (kept for find_by_id and other direct queries)
     game_repo: GameRepository,
 }
 
@@ -50,7 +50,7 @@ impl RoomManager {
         let room = Arc::new(GameRoom::new_with_state(
             game_id,
             &game.fen,
-            self.game_repo.clone(),
+            Arc::new(self.game_repo.clone()) as Arc<dyn GameRepo>,
             game.time_control,
             game.move_time_limit,
             game.byoyomi,

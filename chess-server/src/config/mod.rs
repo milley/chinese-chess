@@ -41,3 +41,71 @@ impl AppConfig {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::sync::Mutex;
+
+    /// Global mutex to serialize config tests (they modify env vars).
+    static CONFIG_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that restores an env var to its original value on drop.
+    struct EnvGuard {
+        key: String,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &str, value: &str) -> Self {
+            let original = env::var(key).ok();
+            // SAFETY: test-only; we restore the original value on drop.
+            unsafe { env::set_var(key, value); }
+            Self { key: key.to_string(), original }
+        }
+
+        fn remove(key: &str) -> Self {
+            let original = env::var(key).ok();
+            // SAFETY: test-only; we restore the original value on drop.
+            unsafe { env::remove_var(key); }
+            Self { key: key.to_string(), original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: test-only; restoring the original value we saved.
+            unsafe {
+                match &self.original {
+                    Some(v) => env::set_var(&self.key, v),
+                    None => env::remove_var(&self.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_app_config_test_mode_defaults() {
+        let _lock = CONFIG_TEST_MUTEX.lock().unwrap();
+        let _g1 = EnvGuard::set("TEST_MODE", "1");
+        let _g2 = EnvGuard::remove("JWT_SECRET");
+        let _g3 = EnvGuard::remove("CORS_ORIGINS");
+
+        let config = AppConfig::from_env().expect("from_env should succeed");
+        assert!(config.test_mode);
+        assert_eq!(config.jwt_secret, "test-secret-key-for-testing-only");
+        assert!(config.cors_origins.contains(&"*".to_string()));
+    }
+
+    #[test]
+    fn test_app_config_cors_origins_parsing() {
+        let _lock = CONFIG_TEST_MUTEX.lock().unwrap();
+        let _g1 = EnvGuard::set("CORS_ORIGINS", "http://a.com,http://b.com");
+        let _g2 = EnvGuard::set("JWT_SECRET", "test-secret");
+        let _g3 = EnvGuard::set("TEST_MODE", "1");
+
+        let config = AppConfig::from_env().expect("from_env should succeed");
+        assert_eq!(config.cors_origins, vec!["http://a.com", "http://b.com"]);
+    }
+}

@@ -238,4 +238,167 @@ mod tests {
         let result: Result<ClientMessage, _> = serde_json::from_str(json);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_client_message_resign_serde() {
+        let msg = ClientMessage::Resign { game_id: "g1".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"resign\""));
+        assert!(json.contains("\"game_id\":\"g1\""));
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, ClientMessage::Resign { .. }));
+    }
+
+    #[test]
+    fn test_client_message_offer_draw_serde() {
+        let msg = ClientMessage::OfferDraw { game_id: "g2".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"offer_draw\""));
+        assert!(json.contains("\"game_id\":\"g2\""));
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, ClientMessage::OfferDraw { .. }));
+    }
+
+    #[test]
+    fn test_client_message_leave_game_serde() {
+        let msg = ClientMessage::LeaveGame { game_id: "g3".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"leave_game\""));
+        assert!(json.contains("\"game_id\":\"g3\""));
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, ClientMessage::LeaveGame { .. }));
+    }
+
+    #[test]
+    fn test_server_message_joined_game_serde() {
+        let msg = ServerMessage::JoinedGame {
+            game_id: "g1".into(),
+            color: "red".into(),
+            fen: "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"joined_game\""));
+        assert!(json.contains("\"game_id\":\"g1\""));
+        assert!(json.contains("\"color\":\"red\""));
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        if let ServerMessage::JoinedGame { game_id, color, fen } = decoded {
+            assert_eq!(game_id, "g1");
+            assert_eq!(color, "red");
+            assert!(!fen.is_empty());
+        } else {
+            panic!("Expected JoinedGame variant");
+        }
+    }
+
+    #[test]
+    fn test_server_message_opponent_disconnected_serde() {
+        let msg = ServerMessage::OpponentDisconnected { game_id: "g1".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"opponent_disconnected\""));
+        assert!(json.contains("\"game_id\":\"g1\""));
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, ServerMessage::OpponentDisconnected { .. }));
+    }
+
+    #[test]
+    fn test_server_message_opponent_reconnected_serde() {
+        let msg = ServerMessage::OpponentReconnected { game_id: "g1".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"opponent_reconnected\""));
+        assert!(json.contains("\"game_id\":\"g1\""));
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, ServerMessage::OpponentReconnected { .. }));
+    }
+
+    #[test]
+    fn test_server_message_draw_offered_serde() {
+        let msg = ServerMessage::DrawOffered { game_id: "g1".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"draw_offered\""));
+        assert!(json.contains("\"game_id\":\"g1\""));
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, ServerMessage::DrawOffered { .. }));
+    }
+
+    #[test]
+    fn test_server_message_draw_response_accepted_serde() {
+        let msg = ServerMessage::DrawResponse { game_id: "g1".into(), accepted: true };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"draw_response\""));
+        assert!(json.contains("\"accepted\":true"));
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        if let ServerMessage::DrawResponse { game_id, accepted } = decoded {
+            assert_eq!(game_id, "g1");
+            assert!(accepted);
+        } else {
+            panic!("Expected DrawResponse variant");
+        }
+    }
+
+    #[test]
+    fn test_server_message_draw_response_rejected_serde() {
+        let msg = ServerMessage::DrawResponse { game_id: "g2".into(), accepted: false };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"draw_response\""));
+        assert!(json.contains("\"accepted\":false"));
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        if let ServerMessage::DrawResponse { game_id, accepted } = decoded {
+            assert_eq!(game_id, "g2");
+            assert!(!accepted);
+        } else {
+            panic!("Expected DrawResponse variant");
+        }
+    }
+
+    #[test]
+    fn test_server_message_illegal_move_serde() {
+        let msg = ServerMessage::IllegalMove {
+            game_id: "g1".into(),
+            reason: "invalid destination".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"illegal_move\""));
+        assert!(json.contains("\"game_id\":\"g1\""));
+        assert!(json.contains("\"reason\":\"invalid destination\""));
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        if let ServerMessage::IllegalMove { game_id, reason } = decoded {
+            assert_eq!(game_id, "g1");
+            assert_eq!(reason, "invalid destination");
+        } else {
+            panic!("Expected IllegalMove variant");
+        }
+    }
+
+    #[test]
+    fn test_move_entry_serde_roundtrip() {
+        use crate::websocket::room::MoveEntry;
+
+        let entry = MoveEntry {
+            mv: "b0-c2".to_string(),
+            color: "red".to_string(),
+            fen: "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w".to_string(),
+            is_check: true,
+            time_spent: Some(5),
+            red_time: Some(595),
+            black_time: Some(600),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        // The "mv" field serializes as "move" due to serde(rename)
+        assert!(json.contains("\"move\":\"b0-c2\""));
+        assert!(json.contains("\"color\":\"red\""));
+        assert!(json.contains("\"is_check\":true"));
+        assert!(json.contains("\"time_spent\":5"));
+        assert!(json.contains("\"red_time\":595"));
+        assert!(json.contains("\"black_time\":600"));
+
+        let decoded: MoveEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.mv, "b0-c2");
+        assert_eq!(decoded.color, "red");
+        assert_eq!(decoded.is_check, true);
+        assert_eq!(decoded.time_spent, Some(5));
+        assert_eq!(decoded.red_time, Some(595));
+        assert_eq!(decoded.black_time, Some(600));
+        assert_eq!(decoded.timestamp, "2026-01-01T00:00:00Z");
+    }
 }

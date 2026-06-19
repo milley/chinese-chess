@@ -706,4 +706,72 @@ mod tests {
         assert_eq!(clone.red.phase, tc.red.phase);
         assert_eq!(clone.active, tc.active);
     }
+
+    #[test]
+    fn test_tick_count_increments_each_active_tick() {
+        let mut tc = TimeControl::new(Some(600), None, None);
+        tc.activate();
+
+        assert_eq!(tc.tick_count(), 0);
+        tc.tick(Color::Red);
+        assert_eq!(tc.tick_count(), 1);
+        tc.tick(Color::Red);
+        assert_eq!(tc.tick_count(), 2);
+        tc.tick(Color::Black);
+        assert_eq!(tc.tick_count(), 3);
+    }
+
+    #[test]
+    fn test_tick_count_does_not_increment_when_inactive() {
+        let mut tc = TimeControl::new(Some(600), None, None);
+        // NOT activated
+
+        tc.tick(Color::Red);
+        tc.tick(Color::Red);
+        assert_eq!(tc.tick_count(), 0, "tick_count should stay 0 when not active");
+    }
+
+    #[test]
+    fn test_double_tick_after_timeout() {
+        let mut tc = TimeControl::new(Some(2), None, None);
+        tc.activate();
+
+        // Tick until timeout
+        tc.tick(Color::Red);
+        tc.tick(Color::Red);
+        let result = tc.tick(Color::Red);
+        assert_eq!(result, TickResult::Timeout(Color::Red));
+
+        // Tick again after timeout — should still return Timeout
+        let result2 = tc.tick(Color::Red);
+        assert_eq!(result2, TickResult::Timeout(Color::Red), "Should remain Timeout after repeated ticks");
+    }
+
+    #[test]
+    fn test_time_control_zero_with_byoyomi() {
+        // Zero game time with byoyomi → immediately enters byoyomi on first tick
+        let mut tc = TimeControl::new(Some(0), None, Some(10));
+        tc.activate();
+
+        assert_eq!(tc.red.remaining, 0);
+        // First tick: remaining is 0, enters byoyomi
+        let result = tc.tick(Color::Red);
+        assert!(matches!(result, TickResult::Ok { .. }), "Should enter byoyomi, not timeout");
+        assert_eq!(tc.phase(Color::Red), TimePhase::Byoyomi);
+    }
+
+    #[test]
+    fn test_move_time_limit_less_than_byoyomi() {
+        // move_time_limit=3 but byoyomi=10 → move_time_limit triggers first
+        let mut tc = TimeControl::new(None, Some(3), Some(10));
+        tc.activate();
+
+        // Tick 2 times — still ok (move_elapsed < 3)
+        assert!(matches!(tc.tick(Color::Red), TickResult::Ok { .. }));
+        assert!(matches!(tc.tick(Color::Red), TickResult::Ok { .. }));
+
+        // 3rd tick — move_time_limit exceeded
+        let result = tc.tick(Color::Red);
+        assert_eq!(result, TickResult::Timeout(Color::Red), "move_time_limit should trigger before byoyomi");
+    }
 }

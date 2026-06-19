@@ -18,3 +18,38 @@ impl Client {
         self.sender.send(msg.to_string()).is_ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn test_client_new() {
+        let user_id = Uuid::new_v4();
+        let username = "test_user".to_string();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let client = Client::new(user_id, username.clone(), tx);
+        assert_eq!(client.user_id, user_id);
+        assert_eq!(client.username, username);
+    }
+
+    #[test]
+    fn test_client_send_success() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let client = Client::new(Uuid::new_v4(), "test_user".to_string(), tx);
+        let result = client.send("hello");
+        assert!(result);
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg, "hello");
+    }
+
+    #[test]
+    fn test_client_send_channel_closed() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let client = Client::new(Uuid::new_v4(), "test_user".to_string(), tx);
+        drop(rx);
+        let result = client.send("hello");
+        assert!(!result);
+    }
+}

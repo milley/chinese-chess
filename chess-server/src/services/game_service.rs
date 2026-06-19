@@ -4,16 +4,23 @@ use crate::db::models::*;
 use crate::db::repositories::game_repo::GameRepository;
 use crate::error::AppError;
 
+/// Validate player_color from a CreateGameRequest.
+/// Returns the validated color string.
+pub fn validate_player_color(color: Option<&str>) -> Result<&str, AppError> {
+    let color = color.unwrap_or("red");
+    if color != "red" && color != "black" {
+        return Err(AppError::BadRequest("player_color must be 'red' or 'black'".into()));
+    }
+    Ok(color)
+}
+
 /// 创建对局
 pub async fn create_game(
     game_repo: &GameRepository,
     creator_id: Uuid,
     data: &CreateGameRequest,
 ) -> Result<(Game, String), AppError> {
-    let color = data.player_color.as_deref().unwrap_or("red");
-    if color != "red" && color != "black" {
-        return Err(AppError::BadRequest("player_color must be 'red' or 'black'".into()));
-    }
+    let color = validate_player_color(data.player_color.as_deref())?;
     let game = game_repo.create(
         creator_id,
         color,
@@ -99,4 +106,34 @@ pub async fn delete_game(
 
     game_repo.delete(game_id).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_player_color_red() {
+        assert_eq!(validate_player_color(Some("red")).unwrap(), "red");
+    }
+
+    #[test]
+    fn test_validate_player_color_black() {
+        assert_eq!(validate_player_color(Some("black")).unwrap(), "black");
+    }
+
+    #[test]
+    fn test_validate_player_color_invalid() {
+        let result = validate_player_color(Some("green"));
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::BadRequest(msg) => assert!(msg.contains("player_color")),
+            _ => panic!("Expected BadRequest error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_player_color_none_default() {
+        assert_eq!(validate_player_color(None).unwrap(), "red");
+    }
 }

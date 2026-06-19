@@ -566,4 +566,139 @@ mod tests {
         assert!(state.history().is_empty());
         assert_eq!(state.to_fen(), fen);
     }
+
+    #[test]
+    fn test_board_mut_allows_mutation() {
+        let mut state = GameState::new();
+        let original_fen = state.to_fen();
+        // Modify the board via board_mut: remove a piece
+        state.board_mut().make_move(Move::new(Position::new(0, 9), Position::new(0, 8)));
+        // The FEN should change since we moved a piece directly
+        assert_ne!(state.to_fen(), original_fen, "board_mut() should allow mutation");
+    }
+
+    #[test]
+    fn test_generate_notation_knight_backward() {
+        // Red knight retreating (row increases = backward for red)
+        let fen = "4k4/9/9/9/9/4N4/9/9/9/4K4 w - - 0 1";
+        let state = GameState::from_fen(fen).unwrap();
+        // Knight at e5 (4,5) to d7 (3,7) — backward for red (row increases)
+        let m = Move::new(Position::new(4, 5), Position::new(3, 7));
+        let notation = state.generate_notation(m);
+        assert!(notation.contains("退"), "Knight retreating should contain 退, got: {}", notation);
+        assert!(notation.contains("马"), "Should contain piece name, got: {}", notation);
+    }
+
+    #[test]
+    fn test_generate_notation_cannon_backward() {
+        // Red cannon retreating along the same column (row increases = backward for red)
+        // Use initial position: advance a cannon first, then retreat it
+        let mut state = GameState::new();
+        // Red cannon at b0 (1,7) advances to b4 (1,3) — forward
+        let m1 = Move::new(Position::new(1, 7), Position::new(1, 3));
+        state.make_move(m1).unwrap();
+        // Black makes any move
+        let m2 = Move::new(Position::new(1, 0), Position::new(2, 2));
+        state.make_move(m2).unwrap();
+        // Now Red cannon retreats from b4 (1,3) back to b0 (1,7) — backward (row increases)
+        let m3 = Move::new(Position::new(1, 3), Position::new(1, 7));
+        let notation = state.generate_notation(m3);
+        assert!(notation.contains("退"), "Cannon retreating should contain 退, got: {}", notation);
+        assert!(notation.contains("炮"), "Should contain piece name, got: {}", notation);
+    }
+
+    #[test]
+    fn test_generate_notation_advisor_backward() {
+        // Red advisor retreating (moving down = backward for red, row increases)
+        // Use initial position: move advisor forward first, then backward
+        let mut state = GameState::new();
+        // Red advisor at d9 (3,9) advances to e8 (4,8) — forward diagonal
+        let m1 = Move::new(Position::new(3, 9), Position::new(4, 8));
+        state.make_move(m1).unwrap();
+        // Black makes any move
+        let m2 = Move::new(Position::new(1, 0), Position::new(2, 2));
+        state.make_move(m2).unwrap();
+        // Now Red advisor retreats from e8 (4,8) back to d9 (3,9) — backward (row increases)
+        let m3 = Move::new(Position::new(4, 8), Position::new(3, 9));
+        let notation = state.generate_notation(m3);
+        assert!(notation.contains("退"), "Advisor retreating should contain 退, got: {}", notation);
+        assert!(notation.contains("仕"), "Should contain piece name, got: {}", notation);
+    }
+
+    #[test]
+    fn test_generate_notation_black_rook_forward() {
+        // Black rook moving forward (row increases = forward for black)
+        let fen = "r3k4/9/9/9/9/9/9/9/9/4K4 b - - 0 1";
+        let state = GameState::from_fen(fen).unwrap();
+        // Black rook at a0 (0,0) to a1 (0,1) — forward for black (row increases)
+        let m = Move::new(Position::new(0, 0), Position::new(0, 1));
+        let notation = state.generate_notation(m);
+        assert!(notation.contains("进"), "Black rook moving forward should contain 进, got: {}", notation);
+        assert!(notation.contains("车"), "Should contain piece name, got: {}", notation);
+    }
+
+    #[test]
+    fn test_generate_notation_two_same_type_same_column() {
+        // Two red cannons on the same column — documents current behavior
+        // (no 前/后 disambiguation yet; the first piece found generates the notation)
+        let fen = "4k4/9/9/4C4/9/9/4C4/9/9/4K4 w - - 0 1";
+        let state = GameState::from_fen(fen).unwrap();
+        // Both cannons are on column 4 (e-file). The cannon at e6 (4,6) moves to e5 (4,5).
+        let m = Move::new(Position::new(4, 6), Position::new(4, 5));
+        let notation = state.generate_notation(m);
+        // Current behavior: generates notation without 前/后 disambiguation
+        // Just verify it contains the piece name and action
+        assert!(notation.contains("炮"), "Should contain piece name, got: {}", notation);
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "serde")]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn test_game_result_serde_roundtrip() {
+        let variants = [GameResult::RedWin, GameResult::BlackWin, GameResult::Draw];
+        for original in variants {
+            let json = serde_json::to_string(&original).unwrap();
+            let decoded: GameResult = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, original, "Roundtrip failed for {:?}", original);
+        }
+    }
+
+    #[test]
+    fn test_game_end_reason_serde_roundtrip() {
+        let variants = [
+            GameEndReason::Checkmate,
+            GameEndReason::Stalemate,
+            GameEndReason::Resign(Color::Red),
+            GameEndReason::Resign(Color::Black),
+            GameEndReason::DrawAgreement,
+            GameEndReason::Timeout(Color::Red),
+            GameEndReason::Timeout(Color::Black),
+        ];
+        for original in variants {
+            let json = serde_json::to_string(&original).unwrap();
+            let decoded: GameEndReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, original, "Roundtrip failed for {:?}", original);
+        }
+    }
+
+    #[test]
+    fn test_game_state_serde_roundtrip() {
+        let state = GameState::new();
+        let fen_before = state.to_fen();
+        // GameState doesn't derive Serialize/Deserialize directly,
+        // but GameResult and GameEndReason do — test those through result
+        let mut state = GameState::new();
+        state.resign(Color::Red);
+        let (result, reason) = state.result().unwrap();
+        let result_json = serde_json::to_string(result).unwrap();
+        let reason_json = serde_json::to_string(reason).unwrap();
+        let decoded_result: GameResult = serde_json::from_str(&result_json).unwrap();
+        let decoded_reason: GameEndReason = serde_json::from_str(&reason_json).unwrap();
+        assert_eq!(decoded_result, GameResult::BlackWin);
+        assert_eq!(decoded_reason, GameEndReason::Resign(Color::Red));
+    }
 }

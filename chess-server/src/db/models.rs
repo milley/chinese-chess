@@ -162,3 +162,88 @@ pub struct AiMoveResponse {
     pub best_move: Option<String>,
     pub depth: u8,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    #[test]
+    fn test_user_info_from_user_excludes_password() {
+        let user = User {
+            id: Uuid::new_v4(),
+            username: "testuser".to_string(),
+            password_hash: "secret_hash".to_string(),
+            display_name: Some("Test".to_string()),
+            rating: 1500,
+            wins: 5,
+            losses: 3,
+            draws: 2,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let info = UserInfo::from(user);
+        assert_eq!(info.username, "testuser");
+        assert_eq!(info.display_name, Some("Test".to_string()));
+        assert_eq!(info.rating, 1500);
+        assert_eq!(info.wins, 5);
+        assert_eq!(info.losses, 3);
+        assert_eq!(info.draws, 2);
+        // UserInfo does not have a password_hash field — compile-time guarantee
+    }
+
+    #[test]
+    fn test_create_game_request_deserialize_full() {
+        let json = r#"{
+            "player_color": "black",
+            "time_control": 600,
+            "move_time_limit": 30,
+            "byoyomi": 10
+        }"#;
+        let req: CreateGameRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.player_color, Some("black".to_string()));
+        assert_eq!(req.time_control, Some(600));
+        assert_eq!(req.move_time_limit, Some(30));
+        assert_eq!(req.byoyomi, Some(10));
+    }
+
+    #[test]
+    fn test_create_game_request_deserialize_defaults() {
+        let json = r#"{
+            "player_color": null,
+            "time_control": null,
+            "move_time_limit": null,
+            "byoyomi": null
+        }"#;
+        let req: CreateGameRequest = serde_json::from_str(json).unwrap();
+        assert!(req.player_color.is_none());
+        assert!(req.time_control.is_none());
+        assert!(req.move_time_limit.is_none());
+        assert!(req.byoyomi.is_none());
+    }
+
+    #[test]
+    fn test_make_move_request_deserialize() {
+        let json = r#"{"from": "b0", "to": "c2"}"#;
+        let req: MakeMoveRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.from, "b0");
+        assert_eq!(req.to, "c2");
+    }
+
+    #[test]
+    fn test_valid_moves_request_deserialize() {
+        let json = r#"{"fen": "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w", "from": "b0"}"#;
+        let req: ValidMovesRequest = serde_json::from_str(json).unwrap();
+        assert!(!req.fen.is_empty());
+        assert_eq!(req.from, "b0");
+    }
+
+    #[test]
+    fn test_ai_move_request_deserialize_defaults() {
+        let json = r#"{"fen": "some_fen", "depth": null}"#;
+        let req: AiMoveRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.fen, "some_fen");
+        assert!(req.depth.is_none());
+    }
+}

@@ -11,6 +11,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue';
+import { parseFen, findKing, parseUciPosition, getSideToMove } from '../utils/chess';
 
 const props = defineProps<{
   fen: string;
@@ -38,44 +39,11 @@ const canvasHeight = computed(() => (BOARD_ROWS - 1) * CELL_SIZE + PADDING * 2);
 
 const flip = computed(() => props.playerColor === 'black');
 
-// FEN char to Chinese name
+// FEN char to Chinese name (kept for drawing — the util version uses it internally)
 const FEN_TO_NAME: Record<string, string> = {
   K: '帅', A: '仕', B: '相', N: '马', R: '车', C: '炮', P: '兵',
   k: '将', a: '士', b: '象', n: '马', r: '车', c: '炮', p: '卒',
 };
-
-function parseFen(fen: string): Map<string, { type: string; color: 'red' | 'black' }> {
-  const pieces = new Map<string, { type: string; color: 'red' | 'black' }>();
-  if (!fen) return pieces;
-  const rows = fen.split(' ')[0].split('/');
-  for (let row = 0; row < rows.length && row < 10; row++) {
-    let col = 0;
-    for (const ch of rows[row]) {
-      if (ch >= '1' && ch <= '9') {
-        col += parseInt(ch);
-      } else {
-        const color: 'red' | 'black' = ch === ch.toUpperCase() ? 'red' : 'black';
-        const name = FEN_TO_NAME[ch] || ch;
-        pieces.set(`${col},${row}`, { type: name, color });
-        col++;
-      }
-    }
-  }
-  return pieces;
-}
-
-/// Find the king position for the given color from the FEN.
-function findKing(fen: string, color: 'red' | 'black'): { col: number; row: number } | null {
-  const pieces = parseFen(fen);
-  const kingName = color === 'red' ? '帅' : '将';
-  for (const [key, piece] of pieces) {
-    if (piece.type === kingName && piece.color === color) {
-      const [col, row] = key.split(',').map(Number);
-      return { col, row };
-    }
-  }
-  return null;
-}
 
 function getDisplayPosition(col: number, row: number): { x: number; y: number } {
   if (flip.value) {
@@ -189,7 +157,7 @@ function draw() {
 
   // Selection highlight
   if (props.selectedSquare) {
-    const pos = parseUci(props.selectedSquare);
+    const pos = parseUciPosition(props.selectedSquare);
     if (pos) {
       const { x, y } = getDisplayPosition(pos.col, pos.row);
       ctx.strokeStyle = '#ff6600';
@@ -202,7 +170,7 @@ function draw() {
 
   // Valid move indicators
   for (const move of props.validMoves) {
-    const pos = parseUci(move);
+    const pos = parseUciPosition(move);
     if (pos) {
       const { x, y } = getDisplayPosition(pos.col, pos.row);
       const hasPiece = pieces.has(`${pos.col},${pos.row}`);
@@ -227,11 +195,6 @@ function draw() {
 }
 
 /// Get the side to move from FEN ('w' = red, 'b' = black).
-function getSideToMove(fen: string): 'red' | 'black' {
-  const parts = fen.split(' ');
-  return parts[1] === 'w' ? 'red' : 'black';
-}
-
 function drawPalaceDiagonals(ctx: CanvasRenderingContext2D, c1: number, r1: number, c2: number, r2: number) {
   const p1 = getDisplayPosition(c1, r1);
   const p2 = getDisplayPosition(c2, r2);
@@ -277,14 +240,6 @@ function drawPiece(ctx: CanvasRenderingContext2D, x: number, y: number, name: st
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(name, x, y + 1);
-}
-
-function parseUci(uci: string): { col: number; row: number } | null {
-  if (uci.length !== 2) return null;
-  const col = uci.charCodeAt(0) - 'a'.charCodeAt(0);
-  const row = parseInt(uci[1]);
-  if (col < 0 || col > 8 || row < 0 || row > 9) return null;
-  return { col, row };
 }
 
 function pixelToPosition(clientX: number, clientY: number): string | null {
