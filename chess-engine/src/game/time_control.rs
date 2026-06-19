@@ -140,6 +140,11 @@ impl TimeControl {
         self.active = true;
     }
 
+    /// Check if time control is currently active.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
     /// Process a 1-second tick. Called by the timeout checker every second.
     ///
     /// Returns `TickResult::Timeout(color)` if a player has lost on time,

@@ -224,11 +224,14 @@ export const useGameStore = defineStore('game', () => {
         break;
       case 'time_update':
         // Server-authoritative time update — overwrite local values.
-        // The local timer only interpolates between these updates.
-        redTime.value = message.red_time;
-        blackTime.value = message.black_time;
-        redInByoyomi.value = message.red_in_byoyomi;
-        blackInByoyomi.value = message.black_in_byoyomi;
+        // Only apply when the game is actually playing; ignore stale
+        // updates that may arrive before the game has started.
+        if (currentGame.value && currentGame.value.status === 'playing') {
+          redTime.value = message.red_time;
+          blackTime.value = message.black_time;
+          redInByoyomi.value = message.red_in_byoyomi;
+          blackInByoyomi.value = message.black_in_byoyomi;
+        }
         break;
       case 'draw_offered':
         // Draw offer received — the offerer doesn't get this back,

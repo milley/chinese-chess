@@ -143,7 +143,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     // Determine color from DB
                                     let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                     if let Some(game) = game {
-                                        let was_waiting = game.status == "waiting";
                                         let color = if game.red_player_id == Some(*user_id) {
                                             chess_engine::Color::Red
                                         } else if game.black_player_id == Some(*user_id) {
@@ -152,10 +151,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             continue;
                                         };
                                         let client = crate::websocket::client::Client::new(*user_id, username.clone(), tx.clone());
-                                        room.join(client, color).await.ok();
+                                        let both_present = room.join(client, color).await.ok().unwrap_or(false);
 
-                                        // Activate time control when game transitions to playing
-                                        if was_waiting {
+                                        // Activate time control when both players are present in the
+                                        // WS room AND time control is not yet active. This covers:
+                                        // 1. Second player joins while game is "waiting" → activate
+                                        // 2. Second player joins after REST join_game set "playing" → activate
+                                        // 3. Player reconnects to an already-active game → skip (idempotent guard)
+                                        // Do NOT activate when only the creator has joined — the timer
+                                        // should not tick until the opponent has also joined.
+                                        if both_present && !room.is_time_active().await {
                                             room.activate_time().await;
                                         }
 
@@ -181,8 +186,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             // Check if opponent is actually connected in the room
                                             let opponent_present = room.has_player(opp_id).await;
                                             if opponent_present {
-                                                if was_waiting {
-                                                    // First time opponent sees this player — send OpponentJoined
+                                                if both_present {
+                                                    // Second player just joined — notify opponent of new player
                                                     if let Ok(Some(opp_user)) = state.user_repo.find_by_id(opp_id).await {
                                                         let opp_info = crate::db::models::UserInfo::from(opp_user);
                                                         let opp_joined_msg = ServerMessage::OpponentJoined {

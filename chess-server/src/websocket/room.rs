@@ -153,7 +153,8 @@ impl GameRoom {
     }
 
     /// 玩家加入
-    pub async fn join(&self, client: Client, color: chess_engine::Color) -> Result<(), String> {
+    /// Returns true if both players are now present (game is ready to start).
+    pub async fn join(&self, client: Client, color: chess_engine::Color) -> Result<bool, String> {
         match color {
             chess_engine::Color::Red => {
                 let mut player = self.red_player.write().await;
@@ -170,7 +171,10 @@ impl GameRoom {
                 *player = Some(client);
             }
         }
-        Ok(())
+        // Check if both players are now present
+        let red = self.red_player.read().await;
+        let black = self.black_player.read().await;
+        Ok(red.is_some() && black.is_some())
     }
 
     /// 执行走法
@@ -641,6 +645,12 @@ impl GameRoom {
         }
     }
 
+    /// Check if time control is currently active.
+    pub async fn is_time_active(&self) -> bool {
+        let tc = self.time_control.read().await;
+        tc.as_ref().map_or(false, |tc| tc.is_active())
+    }
+
     /// 执行一次时间 tick (由超时检查器每秒调用)
     /// 返回 None 表示没有时间控制
     pub async fn tick_time(&self) -> Option<chess_engine::TickResult> {
@@ -759,6 +769,8 @@ mod tests {
         let (client, _) = make_client(red_id, "red_player");
         let result = room.join(client, chess_engine::Color::Red).await;
         assert!(result.is_ok());
+        // Only one player joined — both_present should be false
+        assert!(!result.unwrap());
         assert!(room.has_player(red_id).await);
     }
 
@@ -769,7 +781,23 @@ mod tests {
         let (client, _) = make_client(black_id, "black_player");
         let result = room.join(client, chess_engine::Color::Black).await;
         assert!(result.is_ok());
+        // Only one player joined — both_present should be false
+        assert!(!result.unwrap());
         assert!(room.has_player(black_id).await);
+    }
+
+    #[tokio::test]
+    async fn test_join_both_players_returns_true() {
+        let (room, _) = create_test_room();
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (rc, _) = make_client(red_id, "red_player");
+        let (bc, _) = make_client(black_id, "black_player");
+        let first = room.join(rc, chess_engine::Color::Red).await.unwrap();
+        let second = room.join(bc, chess_engine::Color::Black).await.unwrap();
+        // First join: only one player → false; second join: both present → true
+        assert!(!first);
+        assert!(second);
     }
 
     #[tokio::test]
