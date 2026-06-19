@@ -132,7 +132,7 @@ fn sort_moves(moves: &[Move], board: &Board) -> Vec<Move> {
         let score = move_ordering_score(m, board);
         (score, m)
     }).collect();
-    scored_moves.sort_by(|a, b| b.0.cmp(&a.0));
+    scored_moves.sort_by_key(|b| std::cmp::Reverse(b.0));
     scored_moves.into_iter().map(|(_, m)| m).collect()
 }
 
@@ -151,11 +151,10 @@ fn move_ordering_score(m: Move, board: &Board) -> i32 {
     }
 
     // 将帅走法最后（一般将帅走法不是最佳选择）
-    if let Some(piece) = board.piece_at(m.from) {
-        if piece.piece_type == PieceType::King {
+    if let Some(piece) = board.piece_at(m.from)
+        && piece.piece_type == PieceType::King {
             score -= 1000;
         }
-    }
 
     // 向中心移动的走法略微优先
     let center_col = 4;

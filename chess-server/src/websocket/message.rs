@@ -395,7 +395,7 @@ mod tests {
         let decoded: MoveEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.mv, "b0-c2");
         assert_eq!(decoded.color, "red");
-        assert_eq!(decoded.is_check, true);
+        assert!(decoded.is_check);
         assert_eq!(decoded.time_spent, Some(5));
         assert_eq!(decoded.red_time, Some(595));
         assert_eq!(decoded.black_time, Some(600));

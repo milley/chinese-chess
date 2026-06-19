@@ -335,9 +335,9 @@ mod tests {
             (Position::new(5, 6), Position::new(6, 7)), // right-down
         ];
 
-        for i in 0..4 {
-            assert!(eyes.contains(&expected[i]),
-                "Bishop at (4,5) should have eye/target pair {:?}", expected[i]);
+        for item in &expected {
+            assert!(eyes.contains(item),
+                "Bishop at (4,5) should have eye/target pair {:?}", item);
         }
     }
 

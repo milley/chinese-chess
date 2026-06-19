@@ -31,7 +31,7 @@ impl Position {
 
     /// 字符映射到列号
     pub fn char_to_col(ch: char) -> Option<u8> {
-        if ch >= 'a' && ch <= 'i' {
+        if ('a'..='i').contains(&ch) {
             Some((ch as u8) - b'a')
         } else {
             None

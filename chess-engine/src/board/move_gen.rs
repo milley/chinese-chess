@@ -30,11 +30,10 @@ impl Board {
             .into_iter()
             .filter(|&m| {
                 // 不能吃自己的子
-                if let Some(p) = self.piece_at(m.to) {
-                    if p.color == color {
+                if let Some(p) = self.piece_at(m.to)
+                    && p.color == color {
                         return false;
                     }
-                }
                 // 执行走法后检查是否被将，然后撤销
                 let captured = board.make_move(m);
                 let in_check = crate::rules::is_in_check(&board, color);
@@ -50,18 +49,17 @@ impl Board {
         for (dc, dr) in directions {
             let nc = pos.col as i8 + dc;
             let nr = pos.row as i8 + dr;
-            if nc < 0 || nc > 8 || nr < 0 || nr > 9 {
+            if !(0..=8).contains(&nc) || !(0..=9).contains(&nr) {
                 continue;
             }
             let target = Position::new(nc as u8, nr as u8);
             if !is_in_palace(target, color) {
                 continue;
             }
-            if let Some(p) = self.piece_at(target) {
-                if p.color == color {
+            if let Some(p) = self.piece_at(target)
+                && p.color == color {
                     continue;
                 }
-            }
             moves.push(Move::new(pos, target));
         }
     }
@@ -72,18 +70,17 @@ impl Board {
         for (dc, dr) in directions {
             let nc = pos.col as i8 + dc;
             let nr = pos.row as i8 + dr;
-            if nc < 0 || nc > 8 || nr < 0 || nr > 9 {
+            if !(0..=8).contains(&nc) || !(0..=9).contains(&nr) {
                 continue;
             }
             let target = Position::new(nc as u8, nr as u8);
             if !is_in_palace(target, color) {
                 continue;
             }
-            if let Some(p) = self.piece_at(target) {
-                if p.color == color {
+            if let Some(p) = self.piece_at(target)
+                && p.color == color {
                     continue;
                 }
-            }
             moves.push(Move::new(pos, target));
         }
     }
@@ -104,11 +101,10 @@ impl Board {
                 continue;
             }
             // 不能吃自己的子
-            if let Some(p) = self.piece_at(target) {
-                if p.color == color {
+            if let Some(p) = self.piece_at(target)
+                && p.color == color {
                     continue;
                 }
-            }
             moves.push(Move::new(pos, target));
         }
     }
@@ -125,11 +121,10 @@ impl Board {
                 continue;
             }
             // 不能吃自己的子
-            if let Some(p) = self.piece_at(target) {
-                if p.color == color {
+            if let Some(p) = self.piece_at(target)
+                && p.color == color {
                     continue;
                 }
-            }
             moves.push(Move::new(pos, target));
         }
     }
@@ -140,7 +135,7 @@ impl Board {
         for (dc, dr) in directions {
             let mut nc = pos.col as i8 + dc;
             let mut nr = pos.row as i8 + dr;
-            while nc >= 0 && nc <= 8 && nr >= 0 && nr <= 9 {
+            while (0..=8).contains(&nc) && (0..=9).contains(&nr) {
                 let target = Position::new(nc as u8, nr as u8);
                 if let Some(p) = self.piece_at(target) {
                     if p.color != color {
@@ -163,7 +158,7 @@ impl Board {
             let mut nr = pos.row as i8 + dr;
             let mut jumped = false; // 是否已翻越炮架
 
-            while nc >= 0 && nc <= 8 && nr >= 0 && nr <= 9 {
+            while (0..=8).contains(&nc) && (0..=9).contains(&nr) {
                 let target = Position::new(nc as u8, nr as u8);
                 if !jumped {
                     // 未翻越炮架：非吃子走法（同车）
@@ -194,7 +189,7 @@ impl Board {
 
         // 前进
         let nr = pos.row as i8 + forward;
-        if nr >= 0 && nr <= 9 {
+        if (0..=9).contains(&nr) {
             let target = Position::new(pos.col, nr as u8);
             if let Some(p) = self.piece_at(target) {
                 if p.color != color {
@@ -209,7 +204,7 @@ impl Board {
         if crossed {
             for dc in [-1i8, 1i8] {
                 let nc = pos.col as i8 + dc;
-                if nc >= 0 && nc <= 8 {
+                if (0..=8).contains(&nc) {
                     let target = Position::new(nc as u8, pos.row);
                     if let Some(p) = self.piece_at(target) {
                         if p.color != color {
@@ -398,7 +393,7 @@ mod tests {
             .filter(|m| m.from == cannon_pos && board.piece_at(m.to).is_some())
             .collect();
         // Cannon at (4,7) can capture bishop at (4,5) through screen pawn at (4,6)
-        assert!(captures.len() >= 1, "Cannon should be able to capture through screen, got {} captures", captures.len());
+        assert!(!captures.is_empty(), "Cannon should be able to capture through screen, got {} captures", captures.len());
     }
 
     #[test]
@@ -561,7 +556,7 @@ mod tests {
             .collect();
         // King at left edge of palace: right (4,9) and down (3,8)
         // Left (2,9) is out of palace, up (3,10) is off board
-        assert!(moves.len() >= 1, "King at palace edge should have at least 1 move");
+        assert!(!moves.is_empty(), "King at palace edge should have at least 1 move");
         for m in &moves {
             assert!(is_in_palace(m.to, Color::Red), "King must stay in palace");
         }

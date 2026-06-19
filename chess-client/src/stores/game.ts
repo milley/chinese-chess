@@ -49,6 +49,7 @@ export const useGameStore = defineStore('game', () => {
     playerColor.value = res.color as 'red' | 'black';
     await loadGame(res.game_id);
     wsService.joinGame(res.game_id);
+    startLocalTimer();
   }
 
   async function joinGame(gameId: string) {

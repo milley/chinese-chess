@@ -199,7 +199,7 @@ impl RoomManager {
                             {
                                 let should_persist = {
                                     let tc = room.time_control_read().await;
-                                    tc.as_ref().map_or(false, |tc| tc.tick_count() % 5 == 0)
+                                    tc.as_ref().is_some_and(|tc| tc.tick_count() % 5 == 0)
                                 };
                                 // Lock is released before persist_time, which acquires its own lock
                                 if should_persist {

@@ -219,14 +219,13 @@ impl Board {
             }
         }
         // 如果吃掉了将帅，清除缓存
-        if let Some(cap) = captured {
-            if cap.piece_type == PieceType::King {
+        if let Some(cap) = captured
+            && cap.piece_type == PieceType::King {
                 match cap.color {
                     Color::Red => self.red_king_pos = None,
                     Color::Black => self.black_king_pos = None,
                 }
             }
-        }
 
         // 切换走子方
         self.side_to_move = self.side_to_move.opposite();

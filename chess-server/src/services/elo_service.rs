@@ -17,6 +17,7 @@ use crate::error::AppError;
 /// 1. The game result is authoritative (persisted first).
 /// 2. Elo is an approximate rating — a missed update is not critical.
 /// 3. A future migration can wrap both in a transaction.
+#[allow(clippy::too_many_arguments)]
 pub async fn finish_game_with_elo(
     game_repo: &GameRepository,
     user_repo: &UserRepository,

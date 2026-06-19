@@ -49,11 +49,10 @@ pub fn validate_move(board: &Board, m: Move, color: Color) -> Result<(), MoveErr
     }
 
     // 4. 检查是否吃自己的子
-    if let Some(target) = board.piece_at(m.to) {
-        if target.color == color {
+    if let Some(target) = board.piece_at(m.to)
+        && target.color == color {
             return Err(MoveError::CannotCaptureOwnPiece);
         }
-    }
 
     // 5. 按棋子类型验证走法合法性 (不生成全部伪合法走法)
     if !is_valid_piece_move(board, m, piece.piece_type, color) {
@@ -67,8 +66,8 @@ pub fn validate_move(board: &Board, m: Move, color: Color) -> Result<(), MoveErr
         // 判断是否是飞将导致的被将
         let my_king = new_board.find_king(color);
         let opp_king = new_board.find_king(color.opposite());
-        if let (Some(mk), Some(ok)) = (my_king, opp_king) {
-            if mk.col == ok.col {
+        if let (Some(mk), Some(ok)) = (my_king, opp_king)
+            && mk.col == ok.col {
                 let min_row = mk.row.min(ok.row);
                 let max_row = mk.row.max(ok.row);
                 let blocked = (min_row + 1..max_row)
@@ -77,7 +76,6 @@ pub fn validate_move(board: &Board, m: Move, color: Color) -> Result<(), MoveErr
                     return Err(MoveError::FlyingGeneral);
                 }
             }
-        }
         return Err(MoveError::WouldBeInCheck);
     }
 
@@ -136,7 +134,7 @@ fn is_valid_bishop_move(board: &Board, m: Move, color: Color) -> bool {
     // 塞象眼检测: 象眼在起点和终点的中间
     let eye_col = ((m.from.col as i8) + (m.to.col as i8)) / 2;
     let eye_row = ((m.from.row as i8) + (m.to.row as i8)) / 2;
-    if eye_col < 0 || eye_col > 8 || eye_row < 0 || eye_row > 9 {
+    if !(0..=8).contains(&eye_col) || !(0..=9).contains(&eye_row) {
         return false;
     }
     let eye = Position::new(eye_col as u8, eye_row as u8);

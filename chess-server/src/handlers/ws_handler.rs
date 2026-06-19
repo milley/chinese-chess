@@ -74,8 +74,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }).unwrap_or_default()).ok();
                     }
                     ClientMessage::MakeMove { game_id, from, to } => {
-                        if let Some((user_id, _username)) = &authenticated_user {
-                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                        if let Some((user_id, _username)) = &authenticated_user
+                            && let Ok(gid) = Uuid::parse_str(&game_id) {
                                 let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                 if let Some(game) = game {
                                     if game.status != "playing" {
@@ -130,11 +130,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                                 }
                             }
-                        }
                     }
                     ClientMessage::JoinGame { game_id } => {
-                        if let Some((user_id, username)) = &authenticated_user {
-                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                        if let Some((user_id, username)) = &authenticated_user
+                            && let Ok(gid) = Uuid::parse_str(&game_id) {
                                 if !current_game_ids.contains(&gid) {
                                     current_game_ids.push(gid);
                                 }
@@ -210,14 +209,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                                 }
                             }
-                        }
                     }
                     ClientMessage::LeaveGame { game_id } => {
-                        if let Some((user_id, _)) = &authenticated_user {
-                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                        if let Some((user_id, _)) = &authenticated_user
+                            && let Ok(gid) = Uuid::parse_str(&game_id) {
                                 let room = state.room_manager.get_or_create_room(gid).await;
-                                if let Ok(room) = room {
-                                    if let Ok(Some((_, result_str, reason_str))) = room.leave(*user_id).await {
+                                if let Ok(room) = room
+                                    && let Ok(Some((_, result_str, reason_str))) = room.leave(*user_id).await {
                                         // Game ended by resignation — persist to DB with Elo
                                         let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                         if let Some(game) = game {
@@ -235,17 +233,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             ).await;
                                         }
                                     }
-                                }
                                 current_game_ids.retain(|id| id != &gid);
                             }
-                        }
                     }
                     ClientMessage::Resign { game_id } => {
-                        if let Some((user_id, _)) = &authenticated_user {
-                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                        if let Some((user_id, _)) = &authenticated_user
+                            && let Ok(gid) = Uuid::parse_str(&game_id) {
                                 let room = state.room_manager.get_or_create_room(gid).await;
-                                if let Ok(room) = room {
-                                    if let Ok((_, result_str, reason_str)) = room.resign(*user_id).await {
+                                if let Ok(room) = room
+                                    && let Ok((_, result_str, reason_str)) = room.resign(*user_id).await {
                                         // Game ended by resignation — persist to DB with Elo
                                         let game = state.game_repo.find_by_id(gid).await.ok().flatten();
                                         if let Some(game) = game {
@@ -263,26 +259,22 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             ).await;
                                         }
                                     }
-                                }
                             }
-                        }
                     }
                     ClientMessage::OfferDraw { game_id } => {
-                        if let Some((user_id, _)) = &authenticated_user {
-                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                        if let Some((user_id, _)) = &authenticated_user
+                            && let Ok(gid) = Uuid::parse_str(&game_id) {
                                 let room = state.room_manager.get_or_create_room(gid).await;
-                                if let Ok(room) = room {
-                                    if let Err(e) = room.offer_draw(*user_id).await {
+                                if let Ok(room) = room
+                                    && let Err(e) = room.offer_draw(*user_id).await {
                                         let msg = ServerMessage::Error { message: e };
                                         tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
                                     }
-                                }
                             }
-                        }
                     }
                     ClientMessage::RespondDraw { game_id, accept } => {
-                        if let Some((user_id, _)) = &authenticated_user {
-                            if let Ok(gid) = Uuid::parse_str(&game_id) {
+                        if let Some((user_id, _)) = &authenticated_user
+                            && let Ok(gid) = Uuid::parse_str(&game_id) {
                                 let room = state.room_manager.get_or_create_room(gid).await;
                                 if let Ok(room) = room {
                                     match room.respond_draw(*user_id, accept).await {
@@ -314,7 +306,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                                 }
                             }
-                        }
                     }
                 }
             }
@@ -329,8 +320,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     if let Some((user_id, _)) = &authenticated_user {
         for gid in &current_game_ids {
             let room = state.room_manager.get_or_create_room(*gid).await;
-            if let Ok(room) = room {
-                if let Ok(Some((_, result_str, reason_str))) = room.handle_disconnect(*user_id).await {
+            if let Ok(room) = room
+                && let Ok(Some((_, result_str, reason_str))) = room.handle_disconnect(*user_id).await {
                     // Game ended by disconnect — persist to DB with Elo
                     let game = state.game_repo.find_by_id(*gid).await.ok().flatten();
                     if let Some(game) = game {
@@ -348,7 +339,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         ).await;
                     }
                 }
-            }
         }
     }
 

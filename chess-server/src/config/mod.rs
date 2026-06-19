@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub database_url: String,
     pub jwt_secret: String,
     pub cors_origins: Vec<String>,
+    #[allow(dead_code)] // Used in tests; may be read by future config logic
     pub test_mode: bool,
 }
 

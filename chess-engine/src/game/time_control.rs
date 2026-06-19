@@ -168,11 +168,10 @@ impl TimeControl {
         player.move_elapsed += 1;
 
         // Check move_time_limit FIRST — it takes priority over game time
-        if let Some(mtl) = self.move_time_limit {
-            if player.move_elapsed >= mtl {
+        if let Some(mtl) = self.move_time_limit
+            && player.move_elapsed >= mtl {
                 return TickResult::Timeout(side_to_move);
             }
-        }
 
         // Handle game time / byoyomi
         match player.phase {
@@ -194,11 +193,10 @@ impl TimeControl {
                 }
             }
             TimePhase::Byoyomi => {
-                if let Some(byo) = self.byoyomi {
-                    if player.move_elapsed >= byo {
+                if let Some(byo) = self.byoyomi
+                    && player.move_elapsed >= byo {
                         return TickResult::Timeout(side_to_move);
                     }
-                }
             }
         }
 

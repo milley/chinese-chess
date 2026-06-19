@@ -1,7 +1,5 @@
 pub mod auth;
 
-pub use auth::AuthUser;
-
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, Response};

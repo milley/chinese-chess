@@ -112,6 +112,7 @@ impl GameRoom {
     }
 
     /// Create a room restoring from persisted DB state (for server restart recovery).
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_state(
         game_id: Uuid,
         fen: &str,
@@ -235,11 +236,7 @@ impl GameRoom {
         // between the two locks and seeing stale move_elapsed).
         let time_spent = {
             let mut tc = self.time_control.write().await;
-            if let Some(ref mut tc) = *tc {
-                Some(tc.on_move_made(player_color))
-            } else {
-                None
-            }
+            (*tc).as_mut().map(|tc| tc.on_move_made(player_color))
         };
 
         drop(state);
@@ -266,8 +263,8 @@ impl GameRoom {
         self.broadcast(&msg).await;
 
         // 如果游戏结束，广播结果
-        if is_game_over {
-            if let (Some(res), Some(reason)) = (&result, &end_reason) {
+        if is_game_over
+            && let (Some(res), Some(reason)) = (&result, &end_reason) {
                 let over_msg = ServerMessage::GameOver {
                     game_id: self.game_id.to_string(),
                     result: res.clone(),
@@ -275,7 +272,6 @@ impl GameRoom {
                 };
                 self.broadcast(&over_msg).await;
             }
-        }
 
         // Persist time to DB after each move
         self.persist_time().await;
@@ -581,19 +577,17 @@ impl GameRoom {
         let json = serde_json::to_string(message).unwrap_or_default();
 
         let red = self.red_player.read().await;
-        if let Some(client) = red.as_ref() {
-            if !client.send(&json) {
+        if let Some(client) = red.as_ref()
+            && !client.send(&json) {
                 // Red player's channel is dead — they'll be cleaned up on disconnect
             }
-        }
         drop(red);
 
         let black = self.black_player.read().await;
-        if let Some(client) = black.as_ref() {
-            if !client.send(&json) {
+        if let Some(client) = black.as_ref()
+            && !client.send(&json) {
                 // Black player's channel is dead — they'll be cleaned up on disconnect
             }
-        }
         drop(black);
 
         // Broadcast to spectators and prune dead ones
@@ -648,7 +642,7 @@ impl GameRoom {
     /// Check if time control is currently active.
     pub async fn is_time_active(&self) -> bool {
         let tc = self.time_control.read().await;
-        tc.as_ref().map_or(false, |tc| tc.is_active())
+        tc.as_ref().is_some_and(|tc| tc.is_active())
     }
 
     /// 执行一次时间 tick (由超时检查器每秒调用)

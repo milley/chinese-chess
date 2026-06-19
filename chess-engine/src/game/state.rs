@@ -687,8 +687,6 @@ mod serde_tests {
 
     #[test]
     fn test_game_state_serde_roundtrip() {
-        let state = GameState::new();
-        let fen_before = state.to_fen();
         // GameState doesn't derive Serialize/Deserialize directly,
         // but GameResult and GameEndReason do — test those through result
         let mut state = GameState::new();
