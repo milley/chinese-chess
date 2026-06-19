@@ -42,6 +42,7 @@ function createMockGame(overrides: Partial<Game> = {}): Game {
     result: null,
     end_reason: null,
     fen: INITIAL_FEN,
+    initial_fen: INITIAL_FEN,
     time_control: 600,
     move_time_limit: null,
     byoyomi: null,

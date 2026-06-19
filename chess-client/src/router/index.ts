@@ -29,6 +29,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/replay/:id',
+      name: 'Replay',
+      component: () => import('../views/ReplayView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/profile',
       name: 'Profile',
       component: () => import('../views/ProfileView.vue'),

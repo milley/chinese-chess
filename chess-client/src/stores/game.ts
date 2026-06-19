@@ -181,6 +181,7 @@ export const useGameStore = defineStore('game', () => {
             result: null,
             end_reason: null,
             fen: message.fen,
+            initial_fen: null,
             time_control: null,
             move_time_limit: null,
             byoyomi: null,

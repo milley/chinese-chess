@@ -41,6 +41,7 @@ export interface Game {
   result: GameResult | null;
   end_reason: string | null;
   fen: string;
+  initial_fen: string | null;
   time_control: number | null;
   move_time_limit: number | null;
   byoyomi: number | null;
@@ -237,3 +238,15 @@ export type WsServerMessage =
   | WsTimeUpdateMessage
   | WsPongMessage
   | WsErrorMessage;
+
+/** A single move entry in a game's move history (from server MoveEntry). */
+export interface MoveEntry {
+  move: string;
+  color: string;
+  fen: string;
+  is_check: boolean;
+  time_spent: number | null;
+  red_time: number | null;
+  black_time: number | null;
+  timestamp: string;
+}

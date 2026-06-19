@@ -13,6 +13,7 @@ import type {
   ValidMovesResponse,
   AiMoveRequest,
   AiMoveResponse,
+  MoveEntry,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -146,6 +147,11 @@ class ApiService {
 
   async makeMove(gameId: string, from: string, to: string): Promise<MakeMoveResponse> {
     const res = await this.client.post<MakeMoveResponse>(`/api/games/${gameId}/move`, { from, to });
+    return res.data;
+  }
+
+  async getGameMoves(gameId: string): Promise<MoveEntry[]> {
+    const res = await this.client.get<MoveEntry[]>(`/api/games/${gameId}/moves`);
     return res.data;
   }
 }

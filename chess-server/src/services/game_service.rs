@@ -76,6 +76,7 @@ pub async fn join_game(
         result: game.result,
         end_reason: game.end_reason,
         fen: game.fen,
+        initial_fen: game.initial_fen,
         time_control: game.time_control,
         move_time_limit: game.move_time_limit,
         byoyomi: game.byoyomi,

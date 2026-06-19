@@ -129,6 +129,7 @@ pub struct GameInfo {
     pub result: Option<String>,
     pub end_reason: Option<String>,
     pub fen: String,
+    pub initial_fen: Option<String>,
     pub time_control: Option<i32>,
     pub move_time_limit: Option<i32>,
     pub byoyomi: Option<i32>,

@@ -54,6 +54,7 @@
         </div>
         <div v-if="gameStore.currentGame?.status === 'finished'" style="color: #d4380d; margin-bottom: 12px; font-weight: bold;">
           游戏结束: {{ formatResult(gameStore.currentGame?.result) }}
+          <router-link :to="`/replay/${gameStore.currentGame?.id}`" style="font-weight: normal; color: #1890ff; margin-left: 8px;">查看回放</router-link>
         </div>
         <div v-if="gameStore.errorMessage" class="error-message" style="margin-bottom: 12px;">{{ gameStore.errorMessage }}</div>
 
