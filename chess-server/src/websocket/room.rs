@@ -208,6 +208,10 @@ impl GameRoom {
             .ok_or("Invalid to position")?;
         let m = chess_engine::Move::new(from_pos, to_pos);
 
+        // Acquire locks in consistent order: time_control first, then game_state.
+        // This matches the lock order in the timeout checker (tick_time acquires
+        // time_control, then timeout acquires game_state), preventing deadlocks.
+        let mut tc = self.time_control.write().await;
         let mut state = self.game_state.write().await;
 
         // 检查是否轮到该玩家
@@ -246,25 +250,17 @@ impl GameRoom {
         };
 
         // Update time control: reset move_elapsed for the player who just moved.
-        // Capture the elapsed time before it's reset.
-        // This is done while still holding the game_state write lock to prevent
-        // inconsistency between game state and time state (e.g., tick_time running
-        // between the two locks and seeing stale move_elapsed).
-        let time_spent = {
-            let mut tc = self.time_control.write().await;
-            (*tc).as_mut().map(|tc| tc.on_move_made(player_color))
-        };
-
-        drop(state);
+        let time_spent = (*tc).as_mut().map(|tc| tc.on_move_made(player_color));
 
         // Get current time state for MoveMade message and MoveEntry
-        let (red_time, black_time) = {
-            let tc = self.time_control.read().await;
-            match tc.as_ref() {
-                Some(tc) => (Some(tc.remaining(chess_engine::Color::Red) as i64), Some(tc.remaining(chess_engine::Color::Black) as i64)),
-                None => (None, None),
-            }
+        let (red_time, black_time) = match tc.as_ref() {
+            Some(tc_val) => (Some(tc_val.remaining(chess_engine::Color::Red) as i64), Some(tc_val.remaining(chess_engine::Color::Black) as i64)),
+            None => (None, None),
         };
+
+        // Release both locks before broadcasting (non-lock operations)
+        drop(tc);
+        drop(state);
 
         // 广播走法
         let msg = ServerMessage::MoveMade {
@@ -797,7 +793,14 @@ impl GameRoom {
 
     /// 执行一次时间 tick (由超时检查器每秒调用)
     /// 返回 None 表示没有时间控制
+    ///
+    /// Lock order: acquires game_state.read() briefly first (to get current side),
+    /// then releases it before acquiring time_control.write(). This avoids deadlock
+    /// with make_move which holds time_control.write() + game_state.write().
     pub async fn tick_time(&self) -> Option<chess_engine::TickResult> {
+        // Snapshot the current side under a short read lock, then release before
+        // acquiring time_control. This prevents deadlock with make_move which
+        // acquires time_control first, then game_state.
         let side = self.current_side().await;
         let mut tc = self.time_control.write().await;
         tc.as_mut().map(|tc| tc.tick(side))

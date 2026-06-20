@@ -141,6 +141,24 @@ impl GameRepository {
     }
 
     pub async fn append_event(&self, game_id: Uuid, event_type: &str, actor_id: Option<Uuid>, data: serde_json::Value) -> Result<GameEvent> {
+        // Use an explicit transaction with pg_advisory_xact_lock to serialize
+        // concurrent inserts for the same game_id. The advisory lock is
+        // transaction-scoped: automatically released on commit/rollback.
+        // This prevents the TOCTOU race between reading MAX(seq_num) and
+        // inserting, which could produce duplicate seq_num values under
+        // concurrent writes.
+        let lock_key1 = game_id.as_u128() as i32;
+        let lock_key2 = (game_id.as_u128() >> 32) as i32;
+
+        let mut tx = self.pool.begin().await?;
+
+        // Acquire advisory lock within the transaction
+        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+            .bind(lock_key1)
+            .bind(lock_key2)
+            .execute(&mut *tx)
+            .await?;
+
         let event = sqlx::query_as::<_, GameEvent>(
             "INSERT INTO game_events (game_id, seq_num, event_type, actor_id, data) \
              SELECT $1, COALESCE(MAX(seq_num), 0) + 1, $2, $3, $4 \
@@ -151,8 +169,10 @@ impl GameRepository {
         .bind(event_type)
         .bind(actor_id)
         .bind(data)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
+
+        tx.commit().await?;
         Ok(event)
     }
 
@@ -164,5 +184,16 @@ impl GameRepository {
         .fetch_all(&self.pool)
         .await?;
         Ok(events)
+    }
+
+    /// Update the last_tick_at timestamp for a game.
+    /// Called by the timeout checker every tick to record when time was last processed.
+    /// On server restart, this timestamp is used to deduct elapsed downtime.
+    pub async fn update_last_tick(&self, id: Uuid) -> Result<()> {
+        sqlx::query("UPDATE games SET last_tick_at = NOW() WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }

@@ -8,4 +8,4 @@ CREATE TABLE game_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_game_events_game_id ON game_events(game_id, seq_num);
+CREATE UNIQUE INDEX idx_game_events_game_id_seq ON game_events(game_id, seq_num);

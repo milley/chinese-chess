@@ -50,6 +50,7 @@ pub struct Game {
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    pub last_tick_at: Option<DateTime<Utc>>,
 }
 
 // === 请求 DTO ===

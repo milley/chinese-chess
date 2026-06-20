@@ -45,8 +45,14 @@ pub async fn finish_game_with_elo(
                 "black_win" => (0.0, 1.0),
                 _ => (0.5, 0.5),
             };
-            let new_red = crate::db::repositories::user_repo::calculate_new_rating(ru.rating, bu.rating, red_score);
-            let new_black = crate::db::repositories::user_repo::calculate_new_rating(bu.rating, ru.rating, black_score);
+            let new_red = crate::db::repositories::user_repo::calculate_new_rating(
+                ru.rating, bu.rating, red_score,
+                ru.wins + ru.losses + ru.draws,
+            );
+            let new_black = crate::db::repositories::user_repo::calculate_new_rating(
+                bu.rating, ru.rating, black_score,
+                bu.wins + bu.losses + bu.draws,
+            );
 
             // Update both players' ratings. If one fails, log but don't roll back the other.
             // The game result is already persisted and is the source of truth.

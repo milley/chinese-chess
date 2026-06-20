@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -9,6 +10,37 @@ use crate::db::repositories::game_repo::GameRepository;
 use crate::db::repositories::user_repo::UserRepository;
 use crate::websocket::message::ServerMessage;
 use crate::websocket::room::{GameRepo, GameRoom, MoveResult};
+
+/// Deduct elapsed downtime from player times after server restart.
+/// `last_tick_at` is when the server last ticked the time control.
+/// `fen` is used to determine which side was to move.
+/// Returns (adjusted_red_time, adjusted_black_time).
+fn deduct_downtime(
+    red_time: Option<i32>,
+    black_time: Option<i32>,
+    fen: &str,
+    last_tick_at: chrono::DateTime<Utc>,
+) -> (Option<i32>, Option<i32>) {
+    let now = Utc::now();
+    if now <= last_tick_at {
+        return (red_time, black_time);
+    }
+    let elapsed_secs = (now - last_tick_at).num_seconds() as i32;
+    if elapsed_secs <= 0 {
+        return (red_time, black_time);
+    }
+    let side_to_move = fen.split(' ').nth(1).unwrap_or("w");
+    match side_to_move {
+        "w" => {
+            // Red was to move — deduct from red's time
+            (red_time.map(|rt| (rt - elapsed_secs).max(0)), black_time)
+        }
+        _ => {
+            // Black was to move — deduct from black's time
+            (red_time, black_time.map(|bt| (bt - elapsed_secs).max(0)))
+        }
+    }
+}
 
 /// 房间管理器
 pub struct RoomManager {
@@ -51,6 +83,17 @@ impl RoomManager {
             .map_err(|e| format!("DB error: {}", e))?
             .ok_or("Game not found".to_string())?;
 
+        // If game is playing and last_tick_at is set, deduct elapsed time
+        // since the last tick. This handles server restart/crash recovery:
+        // the time between last_tick_at and now was "lost" and should be
+        // deducted from the active player's remaining time.
+        let (red_time, black_time) = if game.status == "playing"
+            && let Some(last_tick) = game.last_tick_at {
+                deduct_downtime(game.red_time, game.black_time, &game.fen, last_tick)
+            } else {
+                (game.red_time, game.black_time)
+            };
+
         let room = Arc::new(GameRoom::new_with_state(
             game_id,
             &game.fen,
@@ -58,8 +101,8 @@ impl RoomManager {
             game.time_control,
             game.move_time_limit,
             game.byoyomi,
-            game.red_time,
-            game.black_time,
+            red_time,
+            black_time,
         ));
 
         // If game is already playing, activate time control
@@ -232,6 +275,7 @@ impl RoomManager {
                             // Persist time to DB periodically (every 5 seconds to reduce write load)
                             // The server is authoritative — TimeUpdate broadcasts every second
                             // ensure clients stay in sync even if DB writes are less frequent.
+                            // Also update last_tick_at for crash recovery time drift correction.
                             {
                                 let should_persist = {
                                     let tc = room.time_control_read().await;
@@ -240,6 +284,8 @@ impl RoomManager {
                                 // Lock is released before persist_time, which acquires its own lock
                                 if should_persist {
                                     room.persist_time().await;
+                                    // Record last_tick_at for crash recovery
+                                    let _ = game_repo.update_last_tick(game_id).await;
                                 }
                             }
                         }
@@ -260,5 +306,75 @@ impl Clone for RoomManager {
             game_repo: self.game_repo.clone(),
             user_repo: self.user_repo.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn test_deduct_downtime_red_to_move() {
+        // Red was to move (FEN has "w"), 30 seconds of downtime
+        let last_tick = Utc::now() - Duration::seconds(30);
+        let (red, black) = deduct_downtime(
+            Some(300), Some(300),
+            "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1",
+            last_tick,
+        );
+        assert_eq!(red, Some(270)); // 300 - 30
+        assert_eq!(black, Some(300)); // unchanged
+    }
+
+    #[test]
+    fn test_deduct_downtime_black_to_move() {
+        // Black was to move (FEN has "b"), 30 seconds of downtime
+        let last_tick = Utc::now() - Duration::seconds(30);
+        let (red, black) = deduct_downtime(
+            Some(300), Some(300),
+            "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR b - - 0 1",
+            last_tick,
+        );
+        assert_eq!(red, Some(300)); // unchanged
+        assert_eq!(black, Some(270)); // 300 - 30
+    }
+
+    #[test]
+    fn test_deduct_downtime_floor_at_zero() {
+        // Red had only 10s left, 30 seconds of downtime → clamped to 0
+        let last_tick = Utc::now() - Duration::seconds(30);
+        let (red, _) = deduct_downtime(
+            Some(10), Some(300),
+            "some_fen w - - 0 1",
+            last_tick,
+        );
+        assert_eq!(red, Some(0));
+    }
+
+    #[test]
+    fn test_deduct_downtime_no_downtime() {
+        // last_tick is in the future (clock skew) → no deduction
+        let last_tick = Utc::now() + Duration::seconds(10);
+        let (red, black) = deduct_downtime(
+            Some(300), Some(300),
+            "some_fen w - - 0 1",
+            last_tick,
+        );
+        assert_eq!(red, Some(300));
+        assert_eq!(black, Some(300));
+    }
+
+    #[test]
+    fn test_deduct_downtime_none_times() {
+        // No time control configured → no deduction
+        let last_tick = Utc::now() - Duration::seconds(30);
+        let (red, black) = deduct_downtime(
+            None, None,
+            "some_fen w - - 0 1",
+            last_tick,
+        );
+        assert_eq!(red, None);
+        assert_eq!(black, None);
     }
 }
