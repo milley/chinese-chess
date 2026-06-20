@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::db::repositories::game_repo::GameRepository;
+use crate::db::repositories::user_repo::UserRepository;
 use crate::websocket::message::ServerMessage;
 use crate::websocket::room::{GameRepo, GameRoom, MoveResult};
 
@@ -15,13 +16,16 @@ pub struct RoomManager {
     rooms: Arc<RwLock<HashMap<Uuid, Arc<GameRoom>>>>,
     /// 数据库仓库 (kept for find_by_id and other direct queries)
     game_repo: GameRepository,
+    /// 用户仓库 (for Elo updates on timeout)
+    user_repo: UserRepository,
 }
 
 impl RoomManager {
-    pub fn with_game_repo(game_repo: GameRepository) -> Self {
+    pub fn with_repos(game_repo: GameRepository, user_repo: UserRepository) -> Self {
         Self {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             game_repo,
+            user_repo,
         }
     }
 
@@ -119,6 +123,7 @@ impl RoomManager {
     pub fn start_timeout_checker(&self) {
         let rooms = self.rooms.clone();
         let game_repo = self.game_repo.clone();
+        let user_repo = self.user_repo.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
@@ -157,17 +162,45 @@ impl RoomManager {
                                 chess_engine::Color::Black => ("red_win", "timeout"),
                             };
 
-                            // Update DB (idempotent: WHERE status != 'finished')
-                            // Preserve existing move history from the in-memory log
+                            // Use finish_game_with_elo for proper Elo rating updates
+                            // (fixes bug where timeouts previously skipped Elo)
                             let moves_json = room.move_history_json().await;
-                            let result = game_repo.finish_game(
-                                game_id, result_str, reason_str, &fen, &moves_json
-                            ).await;
+                            let game = game_repo.find_by_id(game_id).await.ok().flatten();
+                            let was_first = if let Some(ref game) = game {
+                                crate::services::elo_service::finish_game_with_elo(
+                                    &game_repo,
+                                    &user_repo,
+                                    game_id,
+                                    game,
+                                    result_str,
+                                    reason_str,
+                                    &fen,
+                                    &moves_json,
+                                ).await.ok().unwrap_or(false)
+                            } else {
+                                // Fallback: no game record found, just finish without Elo
+                                game_repo.finish_game(
+                                    game_id, result_str, reason_str, &fen, &moves_json
+                                ).await.ok().flatten().is_some()
+                            };
 
                             // Only broadcast GameOver if we were the first to finish the game
-                            if let Ok(Some(_)) = result {
+                            if was_first {
                                 // Persist final time state
                                 room.persist_time().await;
+
+                                // Log timeout event (fire-and-forget)
+                                let ev_repo: Arc<dyn GameRepo> = Arc::new(game_repo.clone());
+                                let ev_game_id = game_id;
+                                let ev_color = match color {
+                                    chess_engine::Color::Red => "red",
+                                    chess_engine::Color::Black => "black",
+                                };
+                                tokio::spawn(async move {
+                                    let _ = ev_repo.append_event(ev_game_id, "timeout".to_string(), None, serde_json::json!({
+                                        "color": ev_color, "result": result_str, "reason": reason_str,
+                                    })).await;
+                                });
 
                                 // Broadcast GameOver
                                 let msg = ServerMessage::GameOver {
@@ -222,6 +255,7 @@ impl Clone for RoomManager {
         Self {
             rooms: self.rooms.clone(),
             game_repo: self.game_repo.clone(),
+            user_repo: self.user_repo.clone(),
         }
     }
 }

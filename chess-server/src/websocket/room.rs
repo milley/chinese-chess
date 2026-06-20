@@ -15,11 +15,16 @@ use crate::websocket::message::ServerMessage;
 /// Enables unit testing without a real database connection.
 pub trait GameRepo: Send + Sync {
     fn update_time(&self, game_id: Uuid, red_time: i32, black_time: i32) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+    fn append_event(&self, game_id: Uuid, event_type: String, actor_id: Option<Uuid>, data: serde_json::Value) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 }
 
 impl GameRepo for GameRepository {
     fn update_time(&self, game_id: Uuid, red_time: i32, black_time: i32) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         Box::pin(async move { GameRepository::update_time(self, game_id, red_time, black_time).await })
+    }
+
+    fn append_event(&self, game_id: Uuid, event_type: String, actor_id: Option<Uuid>, data: serde_json::Value) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async move { GameRepository::append_event(self, game_id, &event_type, actor_id, data).await.map(|_| ()) })
     }
 }
 
@@ -156,6 +161,11 @@ impl GameRoom {
     /// 玩家加入
     /// Returns true if both players are now present (game is ready to start).
     pub async fn join(&self, client: Client, color: chess_engine::Color) -> Result<bool, String> {
+        let color_str = match color {
+            chess_engine::Color::Red => "red",
+            chess_engine::Color::Black => "black",
+        };
+        let user_id = client.user_id;
         match color {
             chess_engine::Color::Red => {
                 let mut player = self.red_player.write().await;
@@ -172,6 +182,12 @@ impl GameRoom {
                 *player = Some(client);
             }
         }
+        // Log join event (fire-and-forget)
+        let repo = self.game_repo.clone();
+        let game_id = self.game_id;
+        tokio::spawn(async move {
+            let _ = repo.append_event(game_id, "join".to_string(), Some(user_id), serde_json::json!({ "color": color_str })).await;
+        });
         // Check if both players are now present
         let red = self.red_player.read().await;
         let black = self.black_player.read().await;
@@ -302,6 +318,43 @@ impl GameRoom {
             log.clone()
         };
 
+        // Log events (fire-and-forget)
+        let repo = self.game_repo.clone();
+        let game_id = self.game_id;
+        let ev_from = from.to_string();
+        let ev_to = to.to_string();
+        let ev_fen = fen.clone();
+        let ev_time_spent = time_spent;
+        let ev_red_time = red_time.map(|t| t as i32);
+        let ev_black_time = black_time.map(|t| t as i32);
+        let ev_is_check = is_check;
+        let ev_result = result.clone();
+        let ev_end_reason = end_reason.clone();
+        let ev_color_str = color_str.to_string();
+        let ev_user_id = _user_id;
+        tokio::spawn(async move {
+            let _ = repo.append_event(game_id, "move".to_string(), Some(ev_user_id), serde_json::json!({
+                "from": ev_from, "to": ev_to, "fen": ev_fen,
+                "is_check": ev_is_check, "color": ev_color_str,
+                "time_spent": ev_time_spent, "red_time": ev_red_time, "black_time": ev_black_time,
+            })).await;
+            if ev_is_check && !ev_result.as_ref().is_some_and(|r| r == "red_win" || r == "black_win") {
+                let _ = repo.append_event(game_id, "check".to_string(), Some(ev_user_id), serde_json::json!({
+                    "by": ev_color_str, "fen": ev_fen,
+                })).await;
+            }
+            if let (Some(res), Some(reason)) = (&ev_result, &ev_end_reason) {
+                let event_type = match reason.as_str() {
+                    "checkmate" => "checkmate".to_string(),
+                    "stalemate" => "stalemate".to_string(),
+                    _ => "game_over".to_string(),
+                };
+                let _ = repo.append_event(game_id, event_type, Some(ev_user_id), serde_json::json!({
+                    "result": res, "reason": reason,
+                })).await;
+            }
+        });
+
         Ok(MoveResult {
             fen,
             is_check,
@@ -342,6 +395,21 @@ impl GameRoom {
         };
         self.broadcast(&msg).await;
 
+        // Log resign event (fire-and-forget)
+        let repo = self.game_repo.clone();
+        let game_id = self.game_id;
+        let ev_result = result_str.to_string();
+        let ev_reason = reason_str.to_string();
+        let ev_color = match color {
+            chess_engine::Color::Red => "red",
+            chess_engine::Color::Black => "black",
+        };
+        tokio::spawn(async move {
+            let _ = repo.append_event(game_id, "resign".to_string(), Some(user_id), serde_json::json!({
+                "color": ev_color, "result": ev_result, "reason": ev_reason,
+            })).await;
+        });
+
         Ok((self.game_id.to_string(), result_str.to_string(), reason_str.to_string()))
     }
 
@@ -367,6 +435,19 @@ impl GameRoom {
             game_id: self.game_id.to_string(),
         };
         self.broadcast_to_opponent(color, &msg).await;
+
+        // Log draw_offer event (fire-and-forget)
+        let repo = self.game_repo.clone();
+        let game_id = self.game_id;
+        let ev_color = match color {
+            chess_engine::Color::Red => "red",
+            chess_engine::Color::Black => "black",
+        };
+        tokio::spawn(async move {
+            let _ = repo.append_event(game_id, "draw_offer".to_string(), Some(user_id), serde_json::json!({
+                "color": ev_color,
+            })).await;
+        });
 
         Ok(())
     }
@@ -423,6 +504,15 @@ impl GameRoom {
             };
             self.broadcast(&over_msg).await;
 
+            // Log draw_respond (accepted) event (fire-and-forget)
+            let repo = self.game_repo.clone();
+            let game_id = self.game_id;
+            tokio::spawn(async move {
+                let _ = repo.append_event(game_id, "draw_respond".to_string(), Some(user_id), serde_json::json!({
+                    "accepted": true, "result": "draw", "reason": "draw_agreement",
+                })).await;
+            });
+
             Ok(Some((self.game_id.to_string(), "draw".to_string(), "draw_agreement".to_string())))
         } else {
             // Reject draw, clear offer
@@ -433,6 +523,15 @@ impl GameRoom {
                 accepted: false,
             };
             self.broadcast(&msg).await;
+
+            // Log draw_respond (rejected) event (fire-and-forget)
+            let repo = self.game_repo.clone();
+            let game_id = self.game_id;
+            tokio::spawn(async move {
+                let _ = repo.append_event(game_id, "draw_respond".to_string(), Some(user_id), serde_json::json!({
+                    "accepted": false,
+                })).await;
+            });
 
             Ok(None)
         }
@@ -476,6 +575,21 @@ impl GameRoom {
             reason: reason_str.to_string(),
         };
         self.broadcast(&msg).await;
+
+        // Log leave event (fire-and-forget)
+        let repo = self.game_repo.clone();
+        let game_id = self.game_id;
+        let ev_result = result_str.to_string();
+        let ev_reason = reason_str.to_string();
+        let ev_color = match color {
+            chess_engine::Color::Red => "red",
+            chess_engine::Color::Black => "black",
+        };
+        tokio::spawn(async move {
+            let _ = repo.append_event(game_id, "leave".to_string(), Some(user_id), serde_json::json!({
+                "color": ev_color, "result": ev_result, "reason": ev_reason,
+            })).await;
+        });
 
         Ok(Some((self.game_id.to_string(), result_str.to_string(), reason_str.to_string())))
     }
@@ -526,6 +640,21 @@ impl GameRoom {
             reason: reason_str.to_string(),
         };
         self.broadcast(&over_msg).await;
+
+        // Log disconnect event (fire-and-forget)
+        let repo = self.game_repo.clone();
+        let game_id = self.game_id;
+        let ev_result = result_str.to_string();
+        let ev_reason = reason_str.to_string();
+        let ev_color = match color {
+            chess_engine::Color::Red => "red",
+            chess_engine::Color::Black => "black",
+        };
+        tokio::spawn(async move {
+            let _ = repo.append_event(game_id, "disconnect".to_string(), Some(user_id), serde_json::json!({
+                "color": ev_color, "result": ev_result, "reason": ev_reason,
+            })).await;
+        });
 
         Ok(Some((self.game_id.to_string(), result_str.to_string(), reason_str.to_string())))
     }
@@ -636,6 +765,12 @@ impl GameRoom {
         let mut tc = self.time_control.write().await;
         if let Some(ref mut tc) = *tc {
             tc.activate();
+            // Log time_activate event (fire-and-forget)
+            let repo = self.game_repo.clone();
+            let game_id = self.game_id;
+            tokio::spawn(async move {
+                let _ = repo.append_event(game_id, "time_activate".to_string(), None, serde_json::json!({})).await;
+            });
         }
     }
 
@@ -705,15 +840,17 @@ mod tests {
     use std::sync::Mutex;
     use tokio::sync::mpsc;
 
-    /// Mock GameRepo for testing — records update_time calls
+    /// Mock GameRepo for testing — records update_time and append_event calls
     struct MockGameRepo {
         update_time_calls: Mutex<Vec<(Uuid, i32, i32)>>,
+        append_event_calls: Mutex<Vec<(Uuid, String, Option<Uuid>, serde_json::Value)>>,
     }
 
     impl MockGameRepo {
         fn new() -> Arc<Self> {
             Arc::new(MockGameRepo {
                 update_time_calls: Mutex::new(Vec::new()),
+                append_event_calls: Mutex::new(Vec::new()),
             })
         }
     }
@@ -721,6 +858,11 @@ mod tests {
     impl GameRepo for MockGameRepo {
         fn update_time(&self, game_id: Uuid, red_time: i32, black_time: i32) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
             self.update_time_calls.lock().unwrap().push((game_id, red_time, black_time));
+            Box::pin(async { Ok(()) })
+        }
+
+        fn append_event(&self, game_id: Uuid, event_type: String, actor_id: Option<Uuid>, data: serde_json::Value) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+            self.append_event_calls.lock().unwrap().push((game_id, event_type, actor_id, data));
             Box::pin(async { Ok(()) })
         }
     }

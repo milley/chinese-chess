@@ -203,6 +203,17 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                         game_id: game_id.clone(),
                                                     };
                                                     room.broadcast_to_opponent(color, &reconnected_msg).await;
+
+                                                    // Log reconnect event (fire-and-forget)
+                                                    let game_repo = state.game_repo.clone();
+                                                    let uid = *user_id;
+                                                    let ev_color = match color {
+                                                        chess_engine::Color::Red => "red",
+                                                        chess_engine::Color::Black => "black",
+                                                    };
+                                                    tokio::spawn(async move {
+                                                        let _ = game_repo.append_event(gid, "reconnect", Some(uid), serde_json::json!({ "color": ev_color })).await;
+                                                    });
                                                 }
                                             }
                                         }

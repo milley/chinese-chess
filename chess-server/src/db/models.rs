@@ -6,6 +6,17 @@ use uuid::Uuid;
 // === 数据库行模型 ===
 
 #[derive(Debug, FromRow, Serialize, Deserialize)]
+pub struct GameEvent {
+    pub id: i64,
+    pub game_id: Uuid,
+    pub seq_num: i32,
+    pub event_type: String,
+    pub actor_id: Option<Uuid>,
+    pub data: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow, Serialize, Deserialize)]
 pub struct User {
     pub id: Uuid,
     pub username: String,

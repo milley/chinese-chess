@@ -100,6 +100,18 @@ pub async fn get_game_moves(
     Ok(Json(moves))
 }
 
+/// GET /api/games/{id}/events — 返回对局事件记录 (完整可追溯)
+pub async fn get_game_events(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<GameEvent>>, AppError> {
+    // Verify game exists
+    state.game_repo.find_by_id(id).await?
+        .ok_or(AppError::NotFound("Game not found".into()))?;
+    let events = state.game_repo.list_events(id).await?;
+    Ok(Json(events))
+}
+
 /// 构建GameInfo响应 (共用逻辑)
 async fn build_game_info(state: &AppState, game: crate::db::models::Game) -> Result<GameInfo, AppError> {
     let red_player = match game.red_player_id {

@@ -2,7 +2,7 @@ use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db::models::Game;
+use crate::db::models::{Game, GameEvent};
 
 const INITIAL_FEN: &str = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1";
 
@@ -138,5 +138,31 @@ impl GameRepository {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn append_event(&self, game_id: Uuid, event_type: &str, actor_id: Option<Uuid>, data: serde_json::Value) -> Result<GameEvent> {
+        let event = sqlx::query_as::<_, GameEvent>(
+            "INSERT INTO game_events (game_id, seq_num, event_type, actor_id, data) \
+             SELECT $1, COALESCE(MAX(seq_num), 0) + 1, $2, $3, $4 \
+             FROM game_events WHERE game_id = $1 \
+             RETURNING *"
+        )
+        .bind(game_id)
+        .bind(event_type)
+        .bind(actor_id)
+        .bind(data)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(event)
+    }
+
+    pub async fn list_events(&self, game_id: Uuid) -> Result<Vec<GameEvent>> {
+        let events = sqlx::query_as::<_, GameEvent>(
+            "SELECT * FROM game_events WHERE game_id = $1 ORDER BY seq_num ASC"
+        )
+        .bind(game_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(events)
     }
 }

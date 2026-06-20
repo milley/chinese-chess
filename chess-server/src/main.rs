@@ -56,11 +56,12 @@ async fn main() -> anyhow::Result<()> {
 
     // 6. 创建应用状态
     let game_repo = GameRepository::new(pool.clone());
-    let room_manager = RoomManager::with_game_repo(game_repo.clone());
+    let user_repo = UserRepository::new(pool.clone());
+    let room_manager = RoomManager::with_repos(game_repo.clone(), user_repo.clone());
     room_manager.start_timeout_checker();
 
     let state = AppState {
-        user_repo: UserRepository::new(pool.clone()),
+        user_repo,
         game_repo,
         room_manager,
         jwt_secret: config.jwt_secret.clone(),
@@ -101,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/games/{id}", get(handlers::game_handler::get_game))
         .route("/api/games/{id}", delete(handlers::game_handler::delete_game))
         .route("/api/games/{id}/moves", get(handlers::game_handler::get_game_moves))
+        .route("/api/games/{id}/events", get(handlers::game_handler::get_game_events))
         .route("/api/games", get(handlers::game_handler::list_games))
         .route("/api/games/{id}/join", post(handlers::game_handler::join_game))
         // AI 和走法路由
