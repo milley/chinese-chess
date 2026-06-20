@@ -101,6 +101,7 @@ describe('gameStore', () => {
       store.errorMessage = 'error';
       store.isCheck = true;
       store.opponentDisconnected = true;
+      store.lastMove = { from: 'b9', to: 'c7' };
 
       store.cleanup();
 
@@ -114,6 +115,7 @@ describe('gameStore', () => {
       expect(store.errorMessage).toBeNull();
       expect(store.isCheck).toBe(false);
       expect(store.opponentDisconnected).toBe(false);
+      expect(store.lastMove).toBeNull();
     });
   });
 

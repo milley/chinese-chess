@@ -76,7 +76,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useUserStore } from '../stores/user';
 import { useGameStore } from '../stores/game';
@@ -94,6 +94,9 @@ const createColor = ref('red');
 const createTimeControl = ref<number | null>(null);
 const createMoveTimeLimit = ref<number | null>(null);
 const createByoyomi = ref<number | null>(null);
+
+// Auto-refresh interval (every 5 seconds)
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
 async function loadGames() {
   try {
@@ -144,6 +147,15 @@ function logout() {
   router.push('/login');
 }
 
-onMounted(loadGames);
+onMounted(() => {
+  loadGames();
+  refreshTimer = setInterval(loadGames, 5000);
+});
+onUnmounted(() => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+});
 watch(filter, loadGames);
 </script>

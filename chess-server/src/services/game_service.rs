@@ -34,12 +34,10 @@ pub async fn create_game(
 /// 加入对局
 pub async fn join_game(
     game_repo: &GameRepository,
-    user_repo: &crate::db::repositories::user_repo::UserRepository,
     game_id: Uuid,
     joining_user_id: Uuid,
-    _joining_username: String,
 ) -> Result<GameInfo, AppError> {
-    let game = game_repo.find_by_id(game_id).await?
+    let (game, _red_player, _black_player) = game_repo.find_with_players(game_id).await?
         .ok_or(AppError::NotFound("Game not found".into()))?;
 
     if game.status != "waiting" {
@@ -56,17 +54,12 @@ pub async fn join_game(
         return Err(AppError::BadRequest("Game is already full".into()));
     }
 
-    let game = game_repo.join_game(game_id, joining_user_id).await?;
+    // Join the game (updates the DB row)
+    game_repo.join_game(game_id, joining_user_id).await?;
 
-    // Build response
-    let red_player = match game.red_player_id {
-        Some(pid) => user_repo.find_by_id(pid).await?.map(UserInfo::from),
-        None => None,
-    };
-    let black_player = match game.black_player_id {
-        Some(pid) => user_repo.find_by_id(pid).await?.map(UserInfo::from),
-        None => None,
-    };
+    // Re-fetch with player info in a single query to build the response
+    let (game, red_player, black_player) = game_repo.find_with_players(game_id).await?
+        .ok_or(AppError::NotFound("Game not found".into()))?;
 
     Ok(GameInfo {
         id: game.id,

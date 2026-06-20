@@ -18,6 +18,7 @@
           :selected-square="gameStore.selectedSquare"
           :valid-moves="gameStore.validMoves"
           :is-check="gameStore.isCheck"
+          :last-move="gameStore.lastMove"
           @square-click="gameStore.selectSquare"
         />
       </div>

@@ -5,7 +5,13 @@
     :height="canvasHeight * dpr"
     :style="{ width: canvasWidth + 'px', height: canvasHeight + 'px' }"
     @click="handleClick"
-    @touchstart.prevent="handleTouch"
+    @mousedown="handleMouseDown"
+    @mousemove="handleMouseMove"
+    @mouseup="handleMouseUp"
+    @mouseleave="handleMouseUp"
+    @touchstart.prevent="handleTouchStart"
+    @touchmove.prevent="handleTouchMove"
+    @touchend.prevent="handleTouchEnd"
   />
 </template>
 
@@ -19,6 +25,7 @@ const props = defineProps<{
   selectedSquare: string | null;
   validMoves: string[];
   isCheck?: boolean;
+  lastMove?: { from: string; to: string } | null;
 }>();
 
 const emit = defineEmits<{
@@ -29,6 +36,13 @@ const PIECE_RADIUS = 25;
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const dpr = ref(window.devicePixelRatio || 1);
+
+// Drag-and-drop state
+const isDragging = ref(false);
+const dragFrom = ref<string | null>(null);
+const dragPiece = ref<{ type: string; color: 'red' | 'black' } | null>(null);
+const dragX = ref(0);
+const dragY = ref(0);
 
 const canvasWidth = computed(() => (BOARD_COLS - 1) * CELL_SIZE + PADDING * 2);
 const canvasHeight = computed(() => (BOARD_ROWS - 1) * CELL_SIZE + PADDING * 2);
@@ -118,6 +132,20 @@ function draw() {
     ctx.fillText('汉界', PADDING + 6 * CELL_SIZE, riverY);
   }
 
+  // Last-move highlight (yellow background on from/to squares)
+  if (props.lastMove) {
+    for (const uci of [props.lastMove.from, props.lastMove.to]) {
+      const pos = parseUciPosition(uci);
+      if (pos) {
+        const { x, y } = getDisplayPosition(pos.col, pos.row);
+        ctx.fillStyle = 'rgba(255, 255, 0, 0.35)';
+        ctx.beginPath();
+        ctx.arc(x, y, PIECE_RADIUS + 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
   // Determine which king is in check for the check highlight
   const checkedKingPos = props.isCheck ? findKing(props.fen, getSideToMove(props.fen)) : null;
 
@@ -125,6 +153,12 @@ function draw() {
   const pieces = parseFen(props.fen);
   for (const [key, piece] of pieces) {
     const [col, row] = key.split(',').map(Number);
+
+    // Skip drawing the dragged piece at its original position (it follows the cursor)
+    if (isDragging.value && dragFrom.value === String.fromCharCode('a'.charCodeAt(0) + col) + row) {
+      continue;
+    }
+
     const { x, y } = getDisplayPosition(col, row);
 
     // Check highlight — red glow behind the checked king
@@ -140,6 +174,11 @@ function draw() {
     }
 
     drawPiece(ctx, x, y, piece.type, piece.color);
+  }
+
+  // Draw the dragged piece at cursor position (on top of everything)
+  if (isDragging.value && dragPiece.value) {
+    drawPiece(ctx, dragX.value, dragY.value, dragPiece.value.type, dragPiece.value.color);
   }
 
   // Selection highlight
@@ -241,23 +280,144 @@ function pixelToPosition(clientX: number, clientY: number): string | null {
 }
 
 function handleClick(event: MouseEvent) {
+  // If a drag just completed, don't fire click
+  if (isDragging.value) return;
   const position = pixelToPosition(event.clientX, event.clientY);
   if (position) emit('squareClick', position);
 }
 
-/// Touch event handler for mobile support.
-/// Uses the first touch point. The `.prevent` modifier on @touchstart
-/// prevents the default scroll/zoom behavior, making the canvas interactive
-/// on touch devices.
-function handleTouch(event: TouchEvent) {
+// --- Drag-and-drop handlers ---
+
+function handleMouseDown(event: MouseEvent) {
+  const position = pixelToPosition(event.clientX, event.clientY);
+  if (!position) return;
+
+  // Check if there's a piece at this position
+  const pieces = parseFen(props.fen);
+  const pos = parseUciPosition(position);
+  if (!pos) return;
+
+  const piece = pieces.get(`${pos.col},${pos.row}`);
+  if (!piece) return;
+
+  // Start drag
+  isDragging.value = true;
+  dragFrom.value = position;
+  dragPiece.value = piece;
+
+  const canvas = canvasRef.value;
+  if (canvas) {
+    const rect = canvas.getBoundingClientRect();
+    dragX.value = event.clientX - rect.left;
+    dragY.value = event.clientY - rect.top;
+  }
+
+  // Also emit squareClick to select the piece (shows valid moves)
+  emit('squareClick', position);
+}
+
+function handleMouseMove(event: MouseEvent) {
+  if (!isDragging.value) return;
+
+  const canvas = canvasRef.value;
+  if (canvas) {
+    const rect = canvas.getBoundingClientRect();
+    dragX.value = event.clientX - rect.left;
+    dragY.value = event.clientY - rect.top;
+  }
+
+  draw();
+}
+
+function handleMouseUp(event: MouseEvent) {
+  if (!isDragging.value) return;
+
+  const position = pixelToPosition(event.clientX, event.clientY);
+
+  // If dropped on a valid move target, emit click to execute the move
+  if (position && position !== dragFrom.value) {
+    emit('squareClick', position);
+  }
+
+  // End drag
+  isDragging.value = false;
+  dragFrom.value = null;
+  dragPiece.value = null;
+
+  draw();
+}
+
+/// Touch event handlers for mobile drag support.
+function handleTouchStart(event: TouchEvent) {
   if (event.touches.length === 0) return;
   const touch = event.touches[0];
   const position = pixelToPosition(touch.clientX, touch.clientY);
-  if (position) emit('squareClick', position);
+  if (!position) return;
+
+  // Check if there's a piece at this position
+  const pieces = parseFen(props.fen);
+  const pos = parseUciPosition(position);
+  if (!pos) return;
+
+  const piece = pieces.get(`${pos.col},${pos.row}`);
+  if (!piece) {
+    // No piece — just emit click (for valid move targets)
+    emit('squareClick', position);
+    return;
+  }
+
+  // Start drag
+  isDragging.value = true;
+  dragFrom.value = position;
+  dragPiece.value = piece;
+
+  const canvas = canvasRef.value;
+  if (canvas) {
+    const rect = canvas.getBoundingClientRect();
+    dragX.value = touch.clientX - rect.left;
+    dragY.value = touch.clientY - rect.top;
+  }
+
+  // Also emit click to select the piece
+  emit('squareClick', position);
+}
+
+function handleTouchMove(event: TouchEvent) {
+  if (!isDragging.value || event.touches.length === 0) return;
+
+  const touch = event.touches[0];
+  const canvas = canvasRef.value;
+  if (canvas) {
+    const rect = canvas.getBoundingClientRect();
+    dragX.value = touch.clientX - rect.left;
+    dragY.value = touch.clientY - rect.top;
+  }
+
+  draw();
+}
+
+function handleTouchEnd(event: TouchEvent) {
+  if (!isDragging.value) return;
+
+  // Use the last known drag position to determine drop target
+  const canvas = canvasRef.value;
+  if (canvas) {
+    const position = pixelToPositionUtil(dragX.value, dragY.value, flip.value);
+    if (position && position !== dragFrom.value) {
+      emit('squareClick', position);
+    }
+  }
+
+  // End drag
+  isDragging.value = false;
+  dragFrom.value = null;
+  dragPiece.value = null;
+
+  draw();
 }
 
 // Watch for changes and redraw
-watch(() => [props.fen, props.selectedSquare, props.validMoves, props.isCheck], draw, { deep: true });
+watch(() => [props.fen, props.selectedSquare, props.validMoves, props.isCheck, props.lastMove], draw, { deep: true });
 
 onMounted(() => {
   draw();

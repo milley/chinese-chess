@@ -16,10 +16,12 @@ class WebSocketService {
   private disconnectHandlers: Set<ConnectionHandler> = new Set();
   private reconnectHandlers: Set<ConnectionHandler> = new Set();
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
-  private reconnectDelay = 1000;
+  private reconnectDelay = 1000;  // Base delay in ms (used for exponential backoff)
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
-  private wasConnected = false;  // Track if we've ever been connected (to distinguish first connect vs reconnect)
+  private wasConnected = false;
+  // Message queue for offline sends — messages are replayed on reconnect
+  private pendingMessages: WsClientMessage[] = [];
 
   /** Check if WebSocket is currently connected and ready to send messages. */
   get isConnected(): boolean {
@@ -34,6 +36,12 @@ class WebSocketService {
         this.send({ type: 'auth', token });
         this.reconnectAttempts = 0;
         this.startPing();
+
+        // Replay any queued messages that were sent while offline
+        for (const msg of this.pendingMessages) {
+          this.ws.send(JSON.stringify(msg));
+        }
+        this.pendingMessages = [];
 
         if (this.wasConnected) {
           // This is a reconnection, not the first connection
@@ -58,20 +66,9 @@ class WebSocketService {
         this.stopPing();
         this.disconnectHandlers.forEach(h => h());
 
-        if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
-          this.reconnectAttempts++;
-          setTimeout(() => {
-            const storedToken = localStorage.getItem('token');
-            if (storedToken) {
-              this.connect(storedToken).catch((err) => {
-                console.error('WebSocket reconnection failed:', err);
-                // Reconnection failed silently — the next onclose will trigger another attempt
-                // if attempts remain. No user action needed.
-              });
-            }
-          }, this.reconnectDelay * this.reconnectAttempts);
-        } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-          console.error('WebSocket: max reconnection attempts reached');
+        // Reconnect on any abnormal close (not intentional disconnect via code 1000)
+        if (event.code !== 1000) {
+          this.scheduleReconnect();
         }
       };
 
@@ -81,10 +78,50 @@ class WebSocketService {
     });
   }
 
+  /// Schedule a reconnection attempt with exponential backoff + jitter.
+  /// The delay doubles each attempt: 1s, 2s, 4s, 8s, 16s, 32s, ...
+  /// capped at 30 seconds. A random jitter of 0–500ms is added to
+  /// prevent thundering herd on server restart.
+  /// Reconnection continues indefinitely — never gives up.
+  private scheduleReconnect() {
+    if (this.reconnectTimer) return;  // Already scheduled
+
+    // Exponential backoff: 2^attempts * baseDelay, capped at 30s
+    const backoff = Math.min(
+      Math.pow(2, this.reconnectAttempts) * this.reconnectDelay,
+      30000
+    );
+    // Random jitter: 0 to 500ms to avoid thundering herd
+    const jitter = Math.random() * 500;
+
+    this.reconnectAttempts++;
+    const delay = backoff + jitter;
+
+    console.log(`WebSocket: reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts})`);
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      const storedToken = localStorage.getItem('token');
+      if (storedToken) {
+        this.connect(storedToken).catch((err) => {
+          console.error('WebSocket reconnection failed:', err);
+          // Schedule another attempt — never give up
+          this.scheduleReconnect();
+        });
+      }
+    }, delay);
+  }
+
   disconnect() {
+    // Cancel any pending reconnect
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.stopPing();
     this.wasConnected = false;
-    this.reconnectAttempts = this.maxReconnectAttempts; // Prevent auto-reconnect
+    this.reconnectAttempts = 0;
+    this.pendingMessages = [];
     if (this.ws) {
       this.ws.close(1000);
       this.ws = null;
@@ -94,6 +131,9 @@ class WebSocketService {
   send(message: WsClientMessage) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
+    } else {
+      // Queue the message for later — it will be replayed on reconnect
+      this.pendingMessages.push(message);
     }
   }
 

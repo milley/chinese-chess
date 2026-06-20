@@ -32,10 +32,8 @@ pub async fn join_game(
 ) -> Result<Json<GameInfo>, AppError> {
     let game_info = game_service::join_game(
         &state.game_repo,
-        &state.user_repo,
         id,
         auth.user_id,
-        auth.username,
     ).await?;
     Ok(Json(game_info))
 }
@@ -45,11 +43,25 @@ pub async fn get_game(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<GameInfo>, AppError> {
-    let game = state.game_repo.find_by_id(id).await?
+    let (game, red_player, black_player) = state.game_repo.find_with_players(id).await?
         .ok_or(AppError::NotFound("Game not found".into()))?;
 
-    let game_info = build_game_info(&state, game).await?;
-    Ok(Json(game_info))
+    Ok(Json(GameInfo {
+        id: game.id,
+        red_player,
+        black_player,
+        status: game.status,
+        result: game.result,
+        end_reason: game.end_reason,
+        fen: game.fen,
+        initial_fen: game.initial_fen,
+        time_control: game.time_control,
+        move_time_limit: game.move_time_limit,
+        byoyomi: game.byoyomi,
+        red_time: game.red_time,
+        black_time: game.black_time,
+        created_at: game.created_at,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -65,13 +77,27 @@ pub async fn list_games(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<GameInfo>>, AppError> {
     let page = q.page.unwrap_or(1);
-    let page_size = q.page_size.unwrap_or(20);
-    let games = state.game_repo.list(q.status.as_deref(), page, page_size).await?;
+    let page_size = q.page_size.unwrap_or(20).min(100);
+    let rows = state.game_repo.list_with_players(q.status.as_deref(), page, page_size).await?;
 
-    let mut result = Vec::new();
-    for game in games {
-        result.push(build_game_info(&state, game).await?);
-    }
+    let result: Vec<GameInfo> = rows.into_iter().map(|(game, red_player, black_player)| {
+        GameInfo {
+            id: game.id,
+            red_player,
+            black_player,
+            status: game.status,
+            result: game.result,
+            end_reason: game.end_reason,
+            fen: game.fen,
+            initial_fen: game.initial_fen,
+            time_control: game.time_control,
+            move_time_limit: game.move_time_limit,
+            byoyomi: game.byoyomi,
+            red_time: game.red_time,
+            black_time: game.black_time,
+            created_at: game.created_at,
+        }
+    }).collect();
     Ok(Json(result))
 }
 
@@ -110,32 +136,4 @@ pub async fn get_game_events(
         .ok_or(AppError::NotFound("Game not found".into()))?;
     let events = state.game_repo.list_events(id).await?;
     Ok(Json(events))
-}
-
-/// 构建GameInfo响应 (共用逻辑)
-async fn build_game_info(state: &AppState, game: crate::db::models::Game) -> Result<GameInfo, AppError> {
-    let red_player = match game.red_player_id {
-        Some(pid) => state.user_repo.find_by_id(pid).await?.map(UserInfo::from),
-        None => None,
-    };
-    let black_player = match game.black_player_id {
-        Some(pid) => state.user_repo.find_by_id(pid).await?.map(UserInfo::from),
-        None => None,
-    };
-    Ok(GameInfo {
-        id: game.id,
-        red_player,
-        black_player,
-        status: game.status,
-        result: game.result,
-        end_reason: game.end_reason,
-        fen: game.fen,
-        initial_fen: game.initial_fen,
-        time_control: game.time_control,
-        move_time_limit: game.move_time_limit,
-        byoyomi: game.byoyomi,
-        red_time: game.red_time,
-        black_time: game.black_time,
-        created_at: game.created_at,
-    })
 }

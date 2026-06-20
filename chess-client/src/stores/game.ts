@@ -22,6 +22,7 @@ export const useGameStore = defineStore('game', () => {
   const errorTimeout = ref<ReturnType<typeof setTimeout> | null>(null);
   const isCheck = ref(false);
   const opponentDisconnected = ref(false);
+  const lastMove = ref<{ from: string; to: string } | null>(null);
 
   const isMyTurn = computed(() => {
     if (!currentGame.value || !playerColor.value) return false;
@@ -223,6 +224,8 @@ export const useGameStore = defineStore('game', () => {
         }
         // Show check indicator
         isCheck.value = message.is_check;
+        // Track last move for highlight
+        lastMove.value = { from: message.from, to: message.to };
         // Auto-clear check indicator after 2 seconds
         if (message.is_check) {
           setTimeout(() => {
@@ -383,6 +386,7 @@ export const useGameStore = defineStore('game', () => {
     errorMessage.value = null;
     isCheck.value = false;
     opponentDisconnected.value = false;
+    lastMove.value = null;
     currentGame.value = null;
     playerColor.value = null;
     isSpectator.value = false;
@@ -404,7 +408,7 @@ export const useGameStore = defineStore('game', () => {
     currentGame, playerColor, isSpectator, selectedSquare, validMoves,
     moveHistory, drawOffered, drawOfferedByMe, redTime, blackTime,
     redInByoyomi, blackInByoyomi, errorMessage, isMyTurn, isCheck,
-    opponentDisconnected,
+    opponentDisconnected, lastMove,
     createGame, joinGame, joinWsRoom, watchGame, loadGame, selectSquare, makeMove,
     resign, offerDraw, respondDraw, cleanup,
   };

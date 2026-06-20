@@ -169,6 +169,7 @@ impl RoomManager {
         let user_repo = self.user_repo.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut cleanup_counter: u32 = 0;
             loop {
                 interval.tick().await;
 
@@ -180,9 +181,13 @@ impl RoomManager {
                     rooms_guard.iter().map(|(id, room)| (*id, room.clone())).collect()
                 };
 
+                // Collect finished game IDs during iteration for periodic cleanup
+                let mut finished_ids: Vec<Uuid> = Vec::new();
+
                 for (game_id, room) in room_ids {
-                    // Skip if game is already over
+                    // Skip if game is already over (also collect for cleanup)
                     if room.is_game_over().await {
+                        finished_ids.push(game_id);
                         continue;
                     }
 
@@ -193,6 +198,7 @@ impl RoomManager {
                             // Double-check: another handler (resign/move/draw) may have ended the game
                             // between the tick and this point
                             if room.is_game_over().await {
+                                finished_ids.push(game_id);
                                 continue;
                             }
 
@@ -292,6 +298,21 @@ impl RoomManager {
                         None => {
                             // No time control configured for this room
                         }
+                    }
+                }
+
+                // Periodic cleanup: every 60 seconds, remove finished game rooms
+                // to prevent unbounded memory growth. Game results are already
+                // persisted to the DB, so the room data is just a runtime cache.
+                cleanup_counter += 1;
+                if cleanup_counter >= 60 {
+                    cleanup_counter = 0;
+                    if !finished_ids.is_empty() {
+                        let mut rooms_guard = rooms.write().await;
+                        for id in &finished_ids {
+                            rooms_guard.remove(id);
+                        }
+                        tracing::info!("Cleaned up {} finished game rooms", finished_ids.len());
                     }
                 }
             }

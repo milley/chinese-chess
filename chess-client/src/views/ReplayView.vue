@@ -18,6 +18,7 @@
           :selected-square="null"
           :valid-moves="[]"
           :is-check="replayStore.currentMove?.is_check ?? false"
+          :last-move="lastMoveFromReplay"
         />
       </div>
 
@@ -101,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { useUserStore } from '../stores/user';
 import { useReplayStore } from '../stores/replay';
@@ -111,6 +112,14 @@ import ReplayControls from '../components/ReplayControls.vue';
 const route = useRoute();
 const userStore = useUserStore();
 const replayStore = useReplayStore();
+
+const lastMoveFromReplay = computed<{ from: string; to: string } | null>(() => {
+  const move = replayStore.currentMove;
+  if (!move) return null;
+  const parts = move.move.split('-');
+  if (parts.length !== 2) return null;
+  return { from: parts[0], to: parts[1] };
+});
 
 function formatTime(seconds: number | null | undefined): string {
   if (seconds == null) return '--:--';
