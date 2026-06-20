@@ -62,6 +62,8 @@ pub enum ServerMessage {
         game_id: String,
         result: String,
         reason: String,
+        red_time: Option<i64>,
+        black_time: Option<i64>,
     },
     #[serde(rename = "opponent_disconnected")]
     OpponentDisconnected {
@@ -156,6 +158,8 @@ mod tests {
             game_id: "g1".into(),
             result: "red_win".into(),
             reason: "checkmate".into(),
+            red_time: Some(0),
+            black_time: Some(300),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"game_over\""));

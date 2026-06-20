@@ -183,6 +183,8 @@ export interface WsGameOverMessage {
   game_id: string;
   result: string;
   reason: string;
+  red_time?: number | null;
+  black_time?: number | null;
 }
 
 export interface WsOpponentDisconnectedMessage {

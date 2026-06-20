@@ -203,10 +203,13 @@ impl RoomManager {
                                 });
 
                                 // Broadcast GameOver
+                                let (rt, bt) = room.remaining_time().await;
                                 let msg = ServerMessage::GameOver {
                                     game_id: game_id.to_string(),
                                     result: result_str.to_string(),
                                     reason: reason_str.to_string(),
+                                    red_time: rt,
+                                    black_time: bt,
                                 };
                                 room.broadcast(&msg).await;
                             }

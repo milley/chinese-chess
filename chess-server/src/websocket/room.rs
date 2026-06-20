@@ -281,10 +281,13 @@ impl GameRoom {
         // 如果游戏结束，广播结果
         if is_game_over
             && let (Some(res), Some(reason)) = (&result, &end_reason) {
+                let (rt, bt) = self.remaining_time().await;
                 let over_msg = ServerMessage::GameOver {
                     game_id: self.game_id.to_string(),
                     result: res.clone(),
                     reason: reason.clone(),
+                    red_time: rt,
+                    black_time: bt,
                 };
                 self.broadcast(&over_msg).await;
             }
@@ -388,10 +391,13 @@ impl GameRoom {
             state.resign(color);
         }
 
+        let (rt, bt) = self.remaining_time().await;
         let msg = ServerMessage::GameOver {
             game_id: self.game_id.to_string(),
             result: result_str.to_string(),
             reason: reason_str.to_string(),
+            red_time: rt,
+            black_time: bt,
         };
         self.broadcast(&msg).await;
 
@@ -497,10 +503,13 @@ impl GameRoom {
             };
             self.broadcast(&msg).await;
 
+            let (rt, bt) = self.remaining_time().await;
             let over_msg = ServerMessage::GameOver {
                 game_id: self.game_id.to_string(),
                 result: "draw".to_string(),
                 reason: "draw_agreement".to_string(),
+                red_time: rt,
+                black_time: bt,
             };
             self.broadcast(&over_msg).await;
 
@@ -569,10 +578,13 @@ impl GameRoom {
             chess_engine::Color::Black => ("red_win", "resign"),
         };
 
+        let (rt, bt) = self.remaining_time().await;
         let msg = ServerMessage::GameOver {
             game_id: self.game_id.to_string(),
             result: result_str.to_string(),
             reason: reason_str.to_string(),
+            red_time: rt,
+            black_time: bt,
         };
         self.broadcast(&msg).await;
 
@@ -634,10 +646,13 @@ impl GameRoom {
             chess_engine::Color::Black => ("red_win", "disconnect"),
         };
 
+        let (rt, bt) = self.remaining_time().await;
         let over_msg = ServerMessage::GameOver {
             game_id: self.game_id.to_string(),
             result: result_str.to_string(),
             reason: reason_str.to_string(),
+            red_time: rt,
+            black_time: bt,
         };
         self.broadcast(&over_msg).await;
 
@@ -831,6 +846,19 @@ impl GameRoom {
     pub async fn move_history_json(&self) -> String {
         let log = self.move_log.read().await;
         serde_json::to_string(&*log).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// Get the current remaining time as (red_time, black_time) in i64.
+    /// Returns (None, None) if no time control is configured.
+    pub async fn remaining_time(&self) -> (Option<i64>, Option<i64>) {
+        let tc = self.time_control.read().await;
+        match tc.as_ref() {
+            Some(tc) => (
+                Some(tc.remaining(chess_engine::Color::Red) as i64),
+                Some(tc.remaining(chess_engine::Color::Black) as i64),
+            ),
+            None => (None, None),
+        }
     }
 }
 

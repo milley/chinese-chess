@@ -238,6 +238,15 @@ export const useGameStore = defineStore('game', () => {
           currentGame.value.status = 'finished';
           currentGame.value.result = message.result as any;
         }
+        // Sync final time from server (authoritative) to prevent
+        // displaying stale local timer values (e.g., showing 1s
+        // remaining when the player actually timed out at 0s).
+        if (message.red_time !== undefined && message.red_time !== null) {
+          redTime.value = message.red_time;
+        }
+        if (message.black_time !== undefined && message.black_time !== null) {
+          blackTime.value = message.black_time;
+        }
         break;
       case 'time_update':
         // Server-authoritative time update — overwrite local values.
