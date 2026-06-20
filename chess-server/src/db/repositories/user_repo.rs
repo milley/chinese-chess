@@ -42,6 +42,24 @@ impl UserRepository {
         Ok(user)
     }
 
+    /// Find a user by ID within a transaction, using `SELECT ... FOR UPDATE` to
+    /// acquire a row-level lock. This prevents concurrent transactions from
+    /// reading/modifying the same user row until the current transaction commits
+    /// or rolls back, eliminating stale-read race conditions in Elo calculations.
+    ///
+    /// This is an associated function (not a method) because it takes a generic
+    /// executor (transaction reference) rather than using `&self.pool`.
+    pub async fn find_by_id_for_update<'a, E>(executor: E, id: Uuid) -> Result<Option<User>>
+    where
+        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
+    {
+        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(executor)
+            .await?;
+        Ok(user)
+    }
+
     pub async fn update(&self, id: Uuid, display_name: Option<&str>) -> Result<User> {
         let user = sqlx::query_as::<_, User>(
             "UPDATE users SET display_name = $1, updated_at = NOW() WHERE id = $2 RETURNING *"
@@ -69,25 +87,6 @@ impl UserRepository {
             .fetch_all(&self.pool)
             .await?;
         Ok(users)
-    }
-
-    /// Update Elo rating after a game ends
-    pub async fn update_rating(&self, id: Uuid, new_rating: i32, is_win: bool, is_draw: bool) -> Result<()> {
-        let wins_change = if is_win && !is_draw { 1 } else { 0 };
-        let losses_change = if !is_win && !is_draw { 1 } else { 0 };
-        let draws_change = if is_draw { 1 } else { 0 };
-
-        sqlx::query(
-            "UPDATE users SET rating = $1, wins = wins + $2, losses = losses + $3, draws = draws + $4, updated_at = NOW() WHERE id = $5"
-        )
-        .bind(new_rating)
-        .bind(wins_change)
-        .bind(losses_change)
-        .bind(draws_change)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
     }
 }
 

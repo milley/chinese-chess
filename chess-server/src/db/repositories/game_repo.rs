@@ -16,6 +16,12 @@ impl GameRepository {
         Self { pool }
     }
 
+    /// Expose the underlying pool for transaction-based operations
+    /// (e.g., atomic game finish + Elo updates in elo_service).
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     pub async fn create(&self, creator_id: Uuid, creator_color: &str, time_control: Option<i32>, move_time_limit: Option<i32>, byoyomi: Option<i32>) -> Result<Game> {
         let red_time = time_control;
         let black_time = time_control;
@@ -50,34 +56,31 @@ impl GameRepository {
     }
 
     pub async fn join_game(&self, id: Uuid, joining_player_id: Uuid) -> Result<Game> {
-        // Try to fill the red slot first, then black slot.
-        // Each UPDATE includes WHERE ... IS NULL to prevent double-assignment
-        // from concurrent join_game calls.
-        let red_result = sqlx::query_as::<_, Game>(
-            "UPDATE games SET red_player_id = $1, status = 'playing', started_at = NOW() WHERE id = $2 AND status = 'waiting' AND red_player_id IS NULL RETURNING *"
+        // Atomically fill whichever player slot is vacant in a single UPDATE.
+        // This avoids the race condition of two separate UPDATEs where the first
+        // sets status='playing' and the second's WHERE status='waiting' no longer matches.
+        //
+        // Logic: If red_player_id IS NULL, fill red and set status='playing'.
+        //        Else if black_player_id IS NULL, fill black and set status='playing'.
+        //        Else return no rows (game is full).
+        let game = sqlx::query_as::<_, Game>(
+            "UPDATE games SET \
+                red_player_id = CASE WHEN red_player_id IS NULL THEN $1 ELSE red_player_id END, \
+                black_player_id = CASE WHEN red_player_id IS NULL THEN black_player_id ELSE $1 END, \
+                status = 'playing', \
+                started_at = NOW() \
+             WHERE id = $2 AND status = 'waiting' AND (red_player_id IS NULL OR black_player_id IS NULL) \
+             RETURNING *"
         )
         .bind(joining_player_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 
-        if let Some(game) = red_result {
-            return Ok(game);
+        match game {
+            Some(g) => Ok(g),
+            None => Err(anyhow::anyhow!("Game is already full or not found")),
         }
-
-        let black_result = sqlx::query_as::<_, Game>(
-            "UPDATE games SET black_player_id = $1, status = 'playing', started_at = NOW() WHERE id = $2 AND status = 'waiting' AND black_player_id IS NULL RETURNING *"
-        )
-        .bind(joining_player_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if let Some(game) = black_result {
-            return Ok(game);
-        }
-
-        Err(anyhow::anyhow!("Game is already full or not found"))
     }
 
     pub async fn finish_game(&self, id: Uuid, result: &str, end_reason: &str, fen: &str, move_history: &str) -> Result<Option<Game>> {
