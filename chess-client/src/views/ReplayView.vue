@@ -11,7 +11,7 @@
     </nav>
     <div class="container" style="display: flex; gap: 20px;">
       <!-- 棋盘 -->
-      <div>
+      <div style="flex-shrink: 0; max-width: 100%;">
         <ChessBoard
           :fen="replayStore.currentFen"
           :player-color="null"
@@ -47,7 +47,7 @@
 
         <!-- 当前走法详情 -->
         <div v-if="replayStore.currentMove" style="margin-bottom: 12px; font-size: 13px; padding: 8px; background: #f9f6f0; border-radius: 4px;">
-          <div><strong>{{ replayStore.currentMove.color === 'red' ? '红方' : '黑方' }}</strong> 走棋 {{ replayStore.currentMove.move }}</div>
+          <div><strong>{{ replayStore.currentMove.color === 'red' ? '红方' : '黑方' }}</strong> 走棋 {{ replayStore.currentMove.notation || replayStore.currentMove.move }}</div>
           <div v-if="replayStore.currentMove.is_check" style="color: #d4380d; font-weight: bold;">⚠ 将军！</div>
           <div style="color: #666;">
             用时: {{ replayStore.currentMove.time_spent ?? '-' }}秒
@@ -74,7 +74,7 @@
             >
               {{ Math.floor(i / 2) + 1 }}{{ i % 2 === 0 ? '.' : '...' }}
               <span :style="{ color: move.color === 'red' ? '#d4380d' : '#000' }">{{ move.color === 'red' ? '红' : '黑' }}</span>
-              {{ move.move }}
+              {{ move.notation || move.move }}
               <span v-if="move.is_check">+</span>
             </div>
           </div>
@@ -149,14 +149,37 @@ function formatEndReason(reason: string | null | undefined): string {
   }
 }
 
+function handleKeydown(e: KeyboardEvent) {
+  switch (e.key) {
+    case 'ArrowLeft':
+      e.preventDefault();
+      replayStore.goPrev();
+      break;
+    case 'ArrowRight':
+      e.preventDefault();
+      replayStore.goNext();
+      break;
+    case 'Home':
+      e.preventDefault();
+      replayStore.goFirst();
+      break;
+    case 'End':
+      e.preventDefault();
+      replayStore.goLast();
+      break;
+  }
+}
+
 onMounted(async () => {
   const gameId = route.params.id as string;
   if (gameId) {
     await replayStore.loadReplay(gameId);
   }
+  document.addEventListener('keydown', handleKeydown);
 });
 
 onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown);
   replayStore.cleanup();
 });
 </script>

@@ -36,6 +36,8 @@ pub struct MoveEntry {
     /// UCI move string e.g. "b0-c2"
     #[serde(rename = "move")]
     pub mv: String,
+    /// Chinese notation e.g. "炮二平五"
+    pub notation: String,
     /// Which color made the move: "red" or "black"
     pub color: String,
     /// Board state (FEN) after the move
@@ -219,6 +221,9 @@ impl GameRoom {
             return Err("Not your turn".into());
         }
 
+        // Generate Chinese notation BEFORE the move (reads pre-move board state)
+        let notation = state.generate_notation(m);
+
         // 执行走法
         state.make_move(m).map_err(|e| format!("{:?}", e))?;
 
@@ -269,6 +274,7 @@ impl GameRoom {
             to: to.to_string(),
             fen: fen.clone(),
             is_check,
+            notation: notation.clone(),
             red_time,
             black_time,
         };
@@ -298,6 +304,7 @@ impl GameRoom {
         };
         let entry = MoveEntry {
             mv: format!("{}-{}", from, to),
+            notation,
             color: color_str.to_string(),
             fen: fen.clone(),
             is_check,
@@ -1076,6 +1083,7 @@ mod tests {
         assert_ne!(move_result.fen, INITIAL_FEN);
         assert_eq!(move_result.move_history.len(), 1);
         assert_eq!(move_result.move_history[0].mv, "b9-c7");
+        assert!(!move_result.move_history[0].notation.is_empty(), "Notation should be generated");
         assert_eq!(move_result.move_history[0].color, "red");
     }
 

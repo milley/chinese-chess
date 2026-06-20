@@ -50,6 +50,15 @@ class ApiService {
     this.client.interceptors.response.use(
       (response) => response,
       (error) => {
+        if (error.response?.status === 429) {
+          // Rate limited — show friendly message
+          const retryAfter = error.response.headers['retry-after'];
+          const message = retryAfter
+            ? `操作过于频繁，请${retryAfter}秒后再试`
+            : '操作过于频繁，请稍后再试';
+          alert(message);
+          return Promise.reject(error);
+        }
         if (error.response?.status === 401) {
           // Use the user store's logout function for proper cleanup
           // (clears Pinia state, disconnects WebSocket) instead of
@@ -130,6 +139,11 @@ class ApiService {
 
   async deleteGame(id: string): Promise<void> {
     await this.client.delete(`/api/games/${id}`);
+  }
+
+  async rematch(gameId: string): Promise<{ game_id: string; color: string }> {
+    const res = await this.client.post<{ game_id: string; color: string }>(`/api/games/${gameId}/rematch`);
+    return res.data;
   }
 
   // AI API

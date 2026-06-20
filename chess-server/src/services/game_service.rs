@@ -102,6 +102,43 @@ pub async fn delete_game(
     Ok(())
 }
 
+/// 再来一局 (创建新对局，交换颜色，相同时间设置)
+pub async fn create_rematch(
+    game_repo: &GameRepository,
+    original_game_id: Uuid,
+    requester_id: Uuid,
+) -> Result<(Uuid, String), AppError> {
+    // Load the original game
+    let (game, _red_player, _black_player) = game_repo.find_with_players(original_game_id).await?
+        .ok_or(AppError::NotFound("Game not found".into()))?;
+
+    // Game must be finished
+    if game.status != "finished" {
+        return Err(AppError::BadRequest("Can only rematch finished games".into()));
+    }
+
+    // Requester must be a player
+    let was_red = game.red_player_id == Some(requester_id);
+    let was_black = game.black_player_id == Some(requester_id);
+    if !was_red && !was_black {
+        return Err(AppError::Forbidden("Only players can request rematch".into()));
+    }
+
+    // Swap colors: if requester was red, they are now black (and vice versa)
+    let requester_color = if was_red { "black" } else { "red" };
+
+    // Create new game with same time control, requester in swapped color
+    let new_game = game_repo.create(
+        requester_id,
+        requester_color,
+        game.time_control,
+        game.move_time_limit,
+        game.byoyomi,
+    ).await?;
+
+    Ok((new_game.id, requester_color.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

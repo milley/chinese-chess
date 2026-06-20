@@ -10,7 +10,6 @@ use crate::middleware::auth::AuthUser;
 use crate::services::game_service;
 use crate::websocket::room::MoveEntry;
 use crate::AppState;
-
 /// POST /api/games — 创建对局
 pub async fn create_game(
     auth: AuthUser,
@@ -111,6 +110,23 @@ pub async fn delete_game(
     // Clean up in-memory room to prevent zombie rooms
     state.room_manager.remove_room(id).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /api/games/{id}/rematch — 再来一局
+pub async fn rematch(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RematchResponse>, AppError> {
+    let (new_game_id, color) = game_service::create_rematch(
+        &state.game_repo,
+        id,
+        auth.user_id,
+    ).await?;
+    Ok(Json(RematchResponse {
+        game_id: new_game_id,
+        color,
+    }))
 }
 
 /// GET /api/games/{id}/moves — 返回结构化走法记录 (用于调试回溯)

@@ -2,6 +2,8 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import { api } from '../api';
 import { wsService } from '../api/websocket';
+import { parseFen } from '../utils/chess';
+import { playMove, playCapture, playCheck, playGameOver } from '../utils/sound';
 import type { Game, WsServerMessage } from '../types';
 
 export const useGameStore = defineStore('game', () => {
@@ -212,14 +214,28 @@ export const useGameStore = defineStore('game', () => {
         break;
       case 'move_made':
         if (currentGame.value) {
+          // Detect capture by comparing piece counts before updating FEN
+          const oldPieceCount = parseFen(currentGame.value.fen).size;
+          const newPieceCount = parseFen(message.fen).size;
+          const isCapture = newPieceCount < oldPieceCount;
+
           currentGame.value.fen = message.fen;
-          moveHistory.value.push(`${message.from}-${message.to}`);
+          moveHistory.value.push(message.notation || `${message.from}-${message.to}`);
           // Sync time from server (authoritative)
           if (message.red_time !== undefined && message.red_time !== null) {
             redTime.value = message.red_time;
           }
           if (message.black_time !== undefined && message.black_time !== null) {
             blackTime.value = message.black_time;
+          }
+
+          // Play sound effect
+          if (message.is_check) {
+            playCheck();
+          } else if (isCapture) {
+            playCapture();
+          } else {
+            playMove();
           }
         }
         // Show check indicator
@@ -237,6 +253,7 @@ export const useGameStore = defineStore('game', () => {
         break;
       case 'game_over':
         stopLocalTimer();
+        playGameOver();
         if (currentGame.value) {
           currentGame.value.status = 'finished';
           currentGame.value.result = message.result as any;
@@ -370,6 +387,30 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
+  /// 再来一局: 创建新对局(交换颜色)并导航到新对局
+  async function rematch() {
+    if (!currentGame.value) return;
+    try {
+      const res = await api.rematch(currentGame.value.id);
+      // Clean up current game state
+      stopLocalTimer();
+      moveHistory.value = [];
+      drawOffered.value = false;
+      drawOfferedByMe.value = false;
+      isCheck.value = false;
+      lastMove.value = null;
+      selectedSquare.value = null;
+      validMoves.value = [];
+      // Load and join the new game
+      playerColor.value = res.color as 'red' | 'black';
+      await loadGame(res.game_id);
+      wsService.joinGame(res.game_id);
+      startLocalTimer();
+    } catch (err: any) {
+      showError(err.response?.data?.error || '再来一局失败');
+    }
+  }
+
   /// Clean up state and timers when leaving a game view.
   /// Resets auxiliary state and stops the local timer.
   function cleanup() {
@@ -410,6 +451,6 @@ export const useGameStore = defineStore('game', () => {
     redInByoyomi, blackInByoyomi, errorMessage, isMyTurn, isCheck,
     opponentDisconnected, lastMove,
     createGame, joinGame, joinWsRoom, watchGame, loadGame, selectSquare, makeMove,
-    resign, offerDraw, respondDraw, cleanup,
+    resign, offerDraw, respondDraw, rematch, cleanup,
   };
 });

@@ -176,6 +176,12 @@ pub struct AiMoveResponse {
     pub depth: u8,
 }
 
+#[derive(Serialize)]
+pub struct RematchResponse {
+    pub game_id: Uuid,
+    pub color: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

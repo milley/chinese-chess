@@ -49,6 +49,7 @@ pub enum ServerMessage {
         to: String,
         fen: String,
         is_check: bool,
+        notation: String,
         red_time: Option<i64>,
         black_time: Option<i64>,
     },
@@ -147,6 +148,7 @@ mod tests {
             to: "a1".into(),
             fen: "test".into(),
             is_check: false,
+            notation: "车九进一".into(),
             red_time: Some(600),
             black_time: Some(580),
         };
@@ -212,6 +214,7 @@ mod tests {
             to: "e1".into(),
             fen: "test_fen".into(),
             is_check: false,
+            notation: "帅五进一".into(),
             red_time: Some(600),
             black_time: Some(580),
         };
@@ -379,6 +382,7 @@ mod tests {
 
         let entry = MoveEntry {
             mv: "b0-c2".to_string(),
+            notation: "炮二平五".to_string(),
             color: "red".to_string(),
             fen: "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w".to_string(),
             is_check: true,
@@ -390,6 +394,7 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         // The "mv" field serializes as "move" due to serde(rename)
         assert!(json.contains("\"move\":\"b0-c2\""));
+        assert!(json.contains("\"notation\":\"炮二平五\""));
         assert!(json.contains("\"color\":\"red\""));
         assert!(json.contains("\"is_check\":true"));
         assert!(json.contains("\"time_spent\":5"));
@@ -398,6 +403,7 @@ mod tests {
 
         let decoded: MoveEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.mv, "b0-c2");
+        assert_eq!(decoded.notation, "炮二平五");
         assert_eq!(decoded.color, "red");
         assert!(decoded.is_check);
         assert_eq!(decoded.time_spent, Some(5));

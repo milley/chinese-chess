@@ -1,22 +1,29 @@
 <template>
-  <canvas
-    ref="canvasRef"
-    :width="canvasWidth * dpr"
-    :height="canvasHeight * dpr"
-    :style="{ width: canvasWidth + 'px', height: canvasHeight + 'px' }"
-    @click="handleClick"
-    @mousedown="handleMouseDown"
-    @mousemove="handleMouseMove"
-    @mouseup="handleMouseUp"
-    @mouseleave="handleMouseUp"
-    @touchstart.prevent="handleTouchStart"
-    @touchmove.prevent="handleTouchMove"
-    @touchend.prevent="handleTouchEnd"
-  />
+  <div ref="wrapperRef" style="overflow: hidden; width: 100%;">
+    <canvas
+      ref="canvasRef"
+      :width="canvasWidth * dpr"
+      :height="canvasHeight * dpr"
+      :style="{
+        width: canvasWidth + 'px',
+        height: canvasHeight + 'px',
+        transform: `scale(${scale})`,
+        transformOrigin: 'top left',
+      }"
+      @click="handleClick"
+      @mousedown="handleMouseDown"
+      @mousemove="handleMouseMove"
+      @mouseup="handleMouseUp"
+      @mouseleave="handleMouseUp"
+      @touchstart.prevent="handleTouchStart"
+      @touchmove.prevent="handleTouchMove"
+      @touchend.prevent="handleTouchEnd"
+    />
+  </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, computed } from 'vue';
+import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import { parseFen, findKing, parseUciPosition, getSideToMove, getDisplayPosition as getDisplayPositionUtil, pixelToPosition as pixelToPositionUtil, BOARD_COLS, BOARD_ROWS, CELL_SIZE, PADDING } from '../utils/chess';
 
 const props = defineProps<{
@@ -35,7 +42,10 @@ const emit = defineEmits<{
 const PIECE_RADIUS = 25;
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
+const wrapperRef = ref<HTMLDivElement | null>(null);
 const dpr = ref(window.devicePixelRatio || 1);
+const scale = ref(1);
+let resizeObserver: ResizeObserver | null = null;
 
 // Drag-and-drop state
 const isDragging = ref(false);
@@ -421,5 +431,22 @@ watch(() => [props.fen, props.selectedSquare, props.validMoves, props.isCheck, p
 
 onMounted(() => {
   draw();
+
+  // Responsive scaling: observe wrapper size and scale canvas to fit
+  if (wrapperRef.value) {
+    resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const containerW = entry.contentRect.width;
+        const canvasW = canvasWidth.value;
+        // Scale down if container is smaller than canvas, otherwise 1:1
+        scale.value = containerW < canvasW ? containerW / canvasW : 1;
+      }
+    });
+    resizeObserver.observe(wrapperRef.value);
+  }
+});
+
+onUnmounted(() => {
+  resizeObserver?.disconnect();
 });
 </script>

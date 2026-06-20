@@ -168,6 +168,7 @@ export interface WsMoveMadeMessage {
   to: string;
   fen: string;
   is_check: boolean;
+  notation: string;
   red_time?: number;
   black_time?: number;
 }
@@ -244,6 +245,7 @@ export type WsServerMessage =
 /** A single move entry in a game's move history (from server MoveEntry). */
 export interface MoveEntry {
   move: string;
+  notation: string;
   color: string;
   fen: string;
   is_check: boolean;

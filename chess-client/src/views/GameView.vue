@@ -11,7 +11,7 @@
     </nav>
     <div class="container" style="display: flex; gap: 20px;">
       <!-- 棋盘 -->
-      <div>
+      <div style="flex-shrink: 0; max-width: 100%;">
         <ChessBoard
           :fen="gameStore.currentGame?.fen || ''"
           :player-color="gameStore.playerColor"
@@ -56,6 +56,7 @@
         <div v-if="gameStore.currentGame?.status === 'finished'" style="color: #d4380d; margin-bottom: 12px; font-weight: bold;">
           游戏结束: {{ formatResult(gameStore.currentGame?.result) }}
           <router-link :to="`/replay/${gameStore.currentGame?.id}`" style="font-weight: normal; color: #1890ff; margin-left: 8px;">查看回放</router-link>
+          <button v-if="!gameStore.isSpectator" class="btn btn-primary" style="margin-left: 8px; font-weight: normal;" @click="gameStore.rematch()">再来一局</button>
         </div>
         <div v-if="gameStore.errorMessage" class="error-message" style="margin-bottom: 12px;">{{ gameStore.errorMessage }}</div>
 

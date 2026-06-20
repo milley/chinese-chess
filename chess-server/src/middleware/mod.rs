@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod rate_limit;
 
 use axum::body::Body;
 use axum::extract::State;
