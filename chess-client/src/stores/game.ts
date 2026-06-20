@@ -390,8 +390,11 @@ export const useGameStore = defineStore('game', () => {
   /// 再来一局: 创建新对局(交换颜色)并导航到新对局
   async function rematch() {
     if (!currentGame.value) return;
+    const oldGameId = currentGame.value.id;
     try {
-      const res = await api.rematch(currentGame.value.id);
+      const res = await api.rematch(oldGameId);
+      // Leave the old game's WS room before joining the new one
+      wsService.leaveGame(oldGameId);
       // Clean up current game state
       stopLocalTimer();
       moveHistory.value = [];
@@ -412,8 +415,22 @@ export const useGameStore = defineStore('game', () => {
   }
 
   /// Clean up state and timers when leaving a game view.
-  /// Resets auxiliary state and stops the local timer.
+  /// Notifies the server that we're leaving the WS room, stops timers,
+  /// unsubscribes WS listeners, and resets all auxiliary state.
   function cleanup() {
+    // Leave WS room so the server stops sending updates for this game
+    if (currentGame.value) {
+      wsService.leaveGame(currentGame.value.id);
+    }
+    // Unsubscribe WS listeners to prevent stale callbacks
+    if (unsubscribeMain) {
+      unsubscribeMain();
+      unsubscribeMain = null;
+    }
+    if (unsubscribeReconnect) {
+      unsubscribeReconnect();
+      unsubscribeReconnect = null;
+    }
     stopLocalTimer();
     if (errorTimeout.value) {
       clearTimeout(errorTimeout.value);
@@ -433,11 +450,15 @@ export const useGameStore = defineStore('game', () => {
     isSpectator.value = false;
   }
 
+  // Subscription unsubscribe functions for cleanup
+  let unsubscribeMain: (() => void) | null = null;
+  let unsubscribeReconnect: (() => void) | null = null;
+
   // Register WS message listener
-  wsService.onMessage(handleWsMessage);
+  unsubscribeMain = wsService.onMessage(handleWsMessage);
 
   // On WS reconnect, re-join the current game to sync state
-  wsService.onReconnect(() => {
+  unsubscribeReconnect = wsService.onReconnect(() => {
     if (currentGame.value && currentGame.value.status !== 'finished') {
       wsService.joinGame(currentGame.value.id);
       // Reload full game state from server on reconnect

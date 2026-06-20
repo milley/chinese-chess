@@ -96,7 +96,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     let result = state.room_manager.make_move(gid, *user_id, player_color, &from, &to).await;
                                     match result {
                                         Ok(move_result) => {
-                                            // Persist to database (same logic as REST handler)
                                             if move_result.is_game_over {
                                                 let (result_str, reason_str) = match move_result.result.as_deref() {
                                                     Some("red_win") => ("red_win", move_result.end_reason.as_deref().unwrap_or("checkmate")),
@@ -105,16 +104,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                     _ => ("draw", "unknown"),
                                                 };
                                                 let moves_json = serde_json::to_string(&move_result.move_history).unwrap_or("[]".into());
-                                                let _ = crate::services::elo_service::finish_game_with_elo(
-                                                    &state.game_repo,
-                                                    &state.user_repo,
-                                                    gid,
-                                                    &game,
-                                                    result_str,
-                                                    reason_str,
-                                                    &move_result.fen,
-                                                    &moves_json,
-                                                ).await;
+                                                state.persist_game_end(gid, result_str, reason_str, &move_result.fen, &moves_json).await;
                                             } else {
                                                 let moves_json = serde_json::to_string(&move_result.move_history).unwrap_or("[]".into());
                                                 let _ = state.game_repo.update_fen(gid, &move_result.fen, &moves_json).await;
@@ -227,22 +217,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 let room = state.room_manager.get_or_create_room(gid).await;
                                 if let Ok(room) = room
                                     && let Ok(Some((_, result_str, reason_str))) = room.leave(*user_id).await {
-                                        // Game ended by resignation — persist to DB with Elo
-                                        let game = state.game_repo.find_by_id(gid).await.ok().flatten();
-                                        if let Some(game) = game {
-                                            let fen = room.fen().await;
-                                            let moves_json = game.move_history.as_deref().unwrap_or("[]");
-                                            let _ = crate::services::elo_service::finish_game_with_elo(
-                                                &state.game_repo,
-                                                &state.user_repo,
-                                                gid,
-                                                &game,
-                                                &result_str,
-                                                &reason_str,
-                                                &fen,
-                                                moves_json,
-                                            ).await;
-                                        }
+                                        let fen = room.fen().await;
+                                        let moves_json = room.move_history_json().await;
+                                        state.persist_game_end(gid, &result_str, &reason_str, &fen, &moves_json).await;
                                     }
                                 current_game_ids.retain(|id| id != &gid);
                             }
@@ -253,22 +230,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 let room = state.room_manager.get_or_create_room(gid).await;
                                 if let Ok(room) = room
                                     && let Ok((_, result_str, reason_str)) = room.resign(*user_id).await {
-                                        // Game ended by resignation — persist to DB with Elo
-                                        let game = state.game_repo.find_by_id(gid).await.ok().flatten();
-                                        if let Some(game) = game {
-                                            let fen = room.fen().await;
-                                            let moves_json = game.move_history.as_deref().unwrap_or("[]");
-                                            let _ = crate::services::elo_service::finish_game_with_elo(
-                                                &state.game_repo,
-                                                &state.user_repo,
-                                                gid,
-                                                &game,
-                                                &result_str,
-                                                &reason_str,
-                                                &fen,
-                                                moves_json,
-                                            ).await;
-                                        }
+                                        let fen = room.fen().await;
+                                        let moves_json = room.move_history_json().await;
+                                        state.persist_game_end(gid, &result_str, &reason_str, &fen, &moves_json).await;
                                     }
                             }
                     }
@@ -290,22 +254,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 if let Ok(room) = room {
                                     match room.respond_draw(*user_id, accept).await {
                                         Ok(Some((_, result_str, reason_str))) => {
-                                            // Draw accepted — game ended, persist to DB with Elo
-                                            let game = state.game_repo.find_by_id(gid).await.ok().flatten();
-                                            if let Some(game) = game {
-                                                let fen = room.fen().await;
-                                                let moves_json = game.move_history.as_deref().unwrap_or("[]");
-                                                let _ = crate::services::elo_service::finish_game_with_elo(
-                                                    &state.game_repo,
-                                                    &state.user_repo,
-                                                    gid,
-                                                    &game,
-                                                    &result_str,
-                                                    &reason_str,
-                                                    &fen,
-                                                    moves_json,
-                                                ).await;
-                                            }
+                                            let fen = room.fen().await;
+                                            let moves_json = room.move_history_json().await;
+                                            state.persist_game_end(gid, &result_str, &reason_str, &fen, &moves_json).await;
                                         }
                                         Ok(None) => {
                                             // Draw rejected — nothing to persist
@@ -333,22 +284,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             let room = state.room_manager.get_or_create_room(*gid).await;
             if let Ok(room) = room
                 && let Ok(Some((_, result_str, reason_str))) = room.handle_disconnect(*user_id).await {
-                    // Game ended by disconnect — persist to DB with Elo
-                    let game = state.game_repo.find_by_id(*gid).await.ok().flatten();
-                    if let Some(game) = game {
-                        let fen = room.fen().await;
-                        let moves_json = game.move_history.as_deref().unwrap_or("[]");
-                        let _ = crate::services::elo_service::finish_game_with_elo(
-                            &state.game_repo,
-                            &state.user_repo,
-                            *gid,
-                            &game,
-                            &result_str,
-                            &reason_str,
-                            &fen,
-                            moves_json,
-                        ).await;
-                    }
+                    let fen = room.fen().await;
+                    let moves_json = room.move_history_json().await;
+                    state.persist_game_end(*gid, &result_str, &reason_str, &fen, &moves_json).await;
                 }
         }
     }

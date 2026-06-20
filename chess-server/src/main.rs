@@ -30,6 +30,50 @@ pub struct AppState {
     pub jwt_secret: String,
 }
 
+impl AppState {
+    /// Persist a game-ending result to the database with Elo rating updates.
+    ///
+    /// This is the single entry point for all game-ending paths (checkmate, resign,
+    /// draw, disconnect, timeout). It fetches the game from DB, then calls
+    /// `finish_game_with_elo` with the in-room FEN and move history.
+    ///
+    /// Errors are logged but not propagated — the game result is broadcast to
+    /// players regardless of DB persistence success.
+    pub async fn persist_game_end(
+        &self,
+        game_id: uuid::Uuid,
+        result_str: &str,
+        reason_str: &str,
+        fen: &str,
+        move_history: &str,
+    ) {
+        let game = match self.game_repo.find_by_id(game_id).await {
+            Ok(Some(g)) => g,
+            Ok(None) => {
+                tracing::error!("persist_game_end: game {} not found in DB", game_id);
+                return;
+            }
+            Err(e) => {
+                tracing::error!("persist_game_end: failed to fetch game {}: {}", game_id, e);
+                return;
+            }
+        };
+
+        if let Err(e) = crate::services::elo_service::finish_game_with_elo(
+            &self.game_repo,
+            &self.user_repo,
+            game_id,
+            &game,
+            result_str,
+            reason_str,
+            fen,
+            move_history,
+        ).await {
+            tracing::error!("persist_game_end: failed to finish game {} with Elo: {}", game_id, e);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // 1. 加载 .env

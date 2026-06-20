@@ -5,7 +5,6 @@ use uuid::Uuid;
 use crate::db::models::*;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
-use crate::services::elo_service;
 use crate::AppState;
 
 /// POST /api/games/{id}/move — 走棋
@@ -50,16 +49,7 @@ pub async fn make_move(
         };
         let moves_json = serde_json::to_string(&result.move_history).unwrap_or("[]".into());
 
-        elo_service::finish_game_with_elo(
-            &state.game_repo,
-            &state.user_repo,
-            id,
-            &game,
-            result_str,
-            reason_str,
-            &result.fen,
-            &moves_json,
-        ).await?;
+        state.persist_game_end(id, result_str, reason_str, &result.fen, &moves_json).await;
     } else {
         let moves_json = serde_json::to_string(&result.move_history).unwrap_or("[]".into());
         state.game_repo.update_fen(id, &result.fen, &moves_json).await?;
