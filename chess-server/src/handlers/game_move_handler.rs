@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::db::models::*;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
+use crate::utils::validation::validate_position_string;
 use crate::AppState;
 
 /// POST /api/games/{id}/move — 走棋
@@ -14,6 +15,9 @@ pub async fn make_move(
     Path(id): Path<Uuid>,
     Json(data): Json<MakeMoveRequest>,
 ) -> Result<Json<MakeMoveResponse>, AppError> {
+    validate_position_string(&data.from)?;
+    validate_position_string(&data.to)?;
+
     let game = state.game_repo.find_by_id(id).await?
         .ok_or(AppError::NotFound("Game not found".into()))?;
 

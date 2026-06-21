@@ -187,6 +187,31 @@ impl RoomManager {
                 let mut finished_ids: Vec<Uuid> = Vec::new();
 
                 for (game_id, room) in room_ids {
+                    // Check disconnect grace period timeout first
+                    if let Some((gid, result_str, reason_str)) = room.check_disconnect_timeout().await {
+                        // Grace period expired — game ended by disconnect
+                        let fen = room.fen().await;
+                        let moves_json = room.move_history_json().await;
+                        let game = game_repo.find_by_id(gid).await.ok().flatten();
+                        if let Some(ref game) = game {
+                            let _ = crate::services::elo_service::finish_game_with_elo(
+                                &game_repo,
+                                &user_repo,
+                                gid,
+                                game,
+                                &result_str,
+                                &reason_str,
+                                &fen,
+                                &moves_json,
+                            ).await;
+                        } else {
+                            let _ = game_repo.finish_game(gid, &result_str, &reason_str, &fen, &moves_json).await;
+                        }
+                        room.persist_time().await;
+                        finished_ids.push(game_id);
+                        continue;
+                    }
+
                     // Skip if game is already over (also collect for cleanup)
                     if room.is_game_over().await {
                         finished_ids.push(game_id);

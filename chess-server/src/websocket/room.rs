@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,20 @@ pub struct MoveResult {
     pub move_history: Vec<MoveEntry>,
 }
 
+/// Grace period for disconnect before forfeiting (30 seconds).
+pub const DISCONNECT_GRACE_PERIOD: Duration = Duration::from_secs(30);
+
+/// Tracks a disconnected player during the grace period.
+#[derive(Debug)]
+pub struct DisconnectInfo {
+    /// Which color disconnected
+    pub color: chess_engine::Color,
+    /// The user ID of the disconnected player
+    pub user_id: Uuid,
+    /// When the grace period expires
+    pub deadline: tokio::time::Instant,
+}
+
 /// 游戏房间
 pub struct GameRoom {
     /// 游戏状态
@@ -89,6 +104,11 @@ pub struct GameRoom {
     red_player_id: Option<Uuid>,
     /// Black player's user ID (from DB game record, persists across disconnect/reconnect)
     black_player_id: Option<Uuid>,
+    /// Disconnected player info with grace period deadline.
+    /// Set when a player disconnects; cleared on reconnect or timeout forfeit.
+    disconnected: Arc<RwLock<Option<DisconnectInfo>>>,
+    /// Whether time control is paused (during disconnect grace period).
+    time_paused: Arc<RwLock<bool>>,
 }
 
 impl GameRoom {
@@ -170,6 +190,8 @@ impl GameRoom {
             game_repo,
             red_player_id,
             black_player_id,
+            disconnected: Arc::new(RwLock::new(None)),
+            time_paused: Arc::new(RwLock::new(false)),
         }
     }
 
@@ -195,6 +217,9 @@ impl GameRoom {
 
     /// 玩家加入
     /// Returns true if both players are now present (game is ready to start).
+    /// Supports reconnection: if a disconnected player's slot is empty and the
+    /// joining user matches the DB-stored player ID, they reclaim their slot
+    /// and the grace period is cancelled.
     pub async fn join(&self, client: Client, color: chess_engine::Color) -> Result<bool, String> {
         let color_str = match color {
             chess_engine::Color::Red => "red",
@@ -217,6 +242,19 @@ impl GameRoom {
                 *player = Some(client);
             }
         }
+
+        // Cancel disconnect grace period if this is a reconnect
+        {
+            let mut disc = self.disconnected.write().await;
+            if let Some(ref info) = *disc {
+                if info.color == color && info.user_id == user_id {
+                    *disc = None;
+                    // Unpause time control
+                    *self.time_paused.write().await = false;
+                }
+            }
+        }
+
         // Log join event (fire-and-forget)
         let repo = self.game_repo.clone();
         let game_id = self.game_id;
@@ -661,14 +699,21 @@ impl GameRoom {
     }
 
     /// 客户端断连处理
-    /// If the game is in progress, the disconnecting player loses by resignation.
-    /// If the game is already over, just remove the player.
+    /// If the game is in progress, starts a grace period (30 seconds) during which
+    /// the player can reconnect. If the grace period expires, the game ends as a
+    /// disconnect loss. If the game is already over, just remove the player.
     pub async fn handle_disconnect(&self, user_id: Uuid) -> Result<Option<(String, String, String)>, String> {
         // Check if this user is actually a player (not a spectator)
-        let color_result = self.player_color(user_id).await;
+        let color_result = self.player_color_from_db(user_id);
 
-        // Always remove the player from the room
+        // Always remove the player from the room (clears the live Client slot)
         self.remove_player(user_id).await;
+
+        // If not a player (spectator or unknown), nothing more to do
+        let color = match color_result {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
 
         // Notify opponent about disconnect
         let msg = ServerMessage::OpponentDisconnected {
@@ -676,18 +721,61 @@ impl GameRoom {
         };
         self.broadcast(&msg).await;
 
-        // If not a player (spectator), nothing more to do
-        let color = match color_result {
-            Ok(c) => c,
-            Err(_) => return Ok(None),
-        };
-
         // If game is already over, nothing more to do
         if self.is_game_over().await {
             return Ok(None);
         }
 
-        // Game is in progress and a player disconnected — treat as resignation
+        // Game is in progress — start grace period instead of immediate forfeit
+        let info = DisconnectInfo {
+            color,
+            user_id,
+            deadline: tokio::time::Instant::now() + DISCONNECT_GRACE_PERIOD,
+        };
+        *self.disconnected.write().await = Some(info);
+        // Pause time control during grace period
+        *self.time_paused.write().await = true;
+
+        tracing::info!("Player {} (color: {:?}) disconnected from game {} — grace period started ({}s)",
+            user_id, color, self.game_id, DISCONNECT_GRACE_PERIOD.as_secs());
+
+        // No game result yet — the caller should NOT persist anything.
+        // The game will end when check_disconnect_timeout() detects expiry.
+        Ok(None)
+    }
+
+    /// Mark a player as disconnected with a grace period.
+    /// Called from ws_handler when a WebSocket connection closes.
+    /// This is an alias for `handle_disconnect` for clarity at call sites.
+    pub async fn mark_disconnected(&self, user_id: Uuid) -> Result<Option<(String, String, String)>, String> {
+        self.handle_disconnect(user_id).await
+    }
+
+    /// Check if the disconnect grace period has expired.
+    /// Called periodically by the timeout checker.
+    /// Returns Some((game_id, result_str, reason_str)) if the grace period expired
+    /// and the game ended, None otherwise.
+    pub async fn check_disconnect_timeout(&self) -> Option<(Uuid, String, String)> {
+        let disc = self.disconnected.read().await;
+        let info = disc.as_ref()?;
+        let now = tokio::time::Instant::now();
+        if now < info.deadline {
+            return None; // Grace period not yet expired
+        }
+        let color = info.color;
+        let user_id = info.user_id;
+        drop(disc);
+
+        // Clear the disconnect state
+        *self.disconnected.write().await = None;
+        *self.time_paused.write().await = false;
+
+        // If game is already over (e.g., opponent resigned during grace), nothing to do
+        if self.is_game_over().await {
+            return None;
+        }
+
+        // Grace period expired — end the game
         {
             let mut state = self.game_state.write().await;
             if !state.is_game_over() {
@@ -727,7 +815,15 @@ impl GameRoom {
             }
         });
 
-        Ok(Some((self.game_id.to_string(), result_str.to_string(), reason_str.to_string())))
+        tracing::info!("Grace period expired for player {} in game {} — game ended ({})",
+            user_id, game_id, result_str);
+
+        Some((self.game_id, result_str.to_string(), reason_str.to_string()))
+    }
+
+    /// Check if a player is currently in the disconnect grace period.
+    pub async fn is_player_disconnected(&self) -> bool {
+        self.disconnected.read().await.is_some()
     }
 
     /// 获取玩家颜色
@@ -859,7 +955,13 @@ impl GameRoom {
     /// Lock order: acquires game_state.read() briefly first (to get current side),
     /// then releases it before acquiring time_control.write(). This avoids deadlock
     /// with make_move which holds time_control.write() + game_state.write().
+    ///
+    /// Time is paused during disconnect grace period — returns None in that case.
     pub async fn tick_time(&self) -> Option<chess_engine::TickResult> {
+        // Skip ticking during disconnect grace period
+        if *self.time_paused.read().await {
+            return None;
+        }
         // Snapshot the current side under a short read lock, then release before
         // acquiring time_control. This prevents deadlock with make_move which
         // acquires time_control first, then game_state.
@@ -988,8 +1090,23 @@ mod tests {
         (room, mock)
     }
 
-    fn make_client(user_id: Uuid, username: &str) -> (Client, mpsc::UnboundedReceiver<String>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    fn create_test_room_with_player_ids(red_id: Uuid, black_id: Uuid) -> (Arc<GameRoom>, Arc<MockGameRepo>) {
+        let mock = MockGameRepo::new();
+        let game_id = Uuid::new_v4();
+        let room = Arc::new(GameRoom::new_with_ids(
+            game_id,
+            INITIAL_FEN,
+            mock.clone() as Arc<dyn GameRepo>,
+            None, None, None,
+            None, None,
+            Some(red_id),
+            Some(black_id),
+        ));
+        (room, mock)
+    }
+
+    fn make_client(user_id: Uuid, username: &str) -> (Client, mpsc::Receiver<String>) {
+        let (tx, rx) = crate::websocket::client::Client::create_channel();
         (Client::new(user_id, username.to_string(), tx), rx)
     }
 
@@ -1352,36 +1469,38 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_disconnect_player() {
-        let (room, _) = create_test_room();
         let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
         let (rc, _) = make_client(red_id, "red");
         room.join(rc, chess_engine::Color::Red).await.unwrap();
 
+        // With grace period, handle_disconnect returns None (no immediate game end)
         let result = room.handle_disconnect(red_id).await.unwrap();
-        assert!(result.is_some());
-        let (_, result_str, reason_str) = result.unwrap();
-        assert_eq!(result_str, "black_win");
-        assert_eq!(reason_str, "disconnect");
+        assert!(result.is_none(), "Grace period: no immediate game result");
+        // Player should be in disconnected state
+        assert!(room.is_player_disconnected().await);
+        // Time should be paused
+        assert!(*room.time_paused.read().await);
     }
 
     #[tokio::test]
     async fn test_handle_disconnect_spectator() {
         let (room, _) = create_test_room();
         let spec_id = Uuid::new_v4();
-        // Spectators are added via spectators list, but handle_disconnect checks player_color first
-        // Since spectator is not a player, player_color will return error → Ok(None)
+        // Spectator not a player — handle_disconnect should return Ok(None)
         let result = room.handle_disconnect(spec_id).await;
         assert!(result.is_ok());
-        // spectator not in room, so player_color fails → Ok(None)
-        // Actually handle_disconnect first removes_player which is also a no-op for non-players
-        // Let me check: the spec is not in red/black slots, so remove_player is no-op,
-        // then player_color returns Err → Ok(None)
+        assert!(result.unwrap().is_none(), "Spectator disconnect should not end game");
+        // No grace period started
+        assert!(!room.is_player_disconnected().await);
     }
 
     #[tokio::test]
     async fn test_handle_disconnect_game_already_over() {
-        let (room, _) = create_test_room();
         let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
         let (rc, _) = make_client(red_id, "red");
         room.join(rc, chess_engine::Color::Red).await.unwrap();
 

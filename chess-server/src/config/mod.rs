@@ -7,6 +7,10 @@ pub struct AppConfig {
     pub database_url: String,
     pub jwt_secret: String,
     pub cors_origins: Vec<String>,
+    /// Optional trusted proxy header for client IP extraction (e.g., "x-real-ip" set by nginx).
+    /// When set, only this header is trusted; X-Forwarded-For is ignored.
+    /// When unset, uses the direct socket address via ConnectInfo.
+    pub trusted_proxy_header: Option<String>,
     #[allow(dead_code)] // Used in tests; may be read by future config logic
     pub test_mode: bool,
 }
@@ -38,6 +42,7 @@ impl AppConfig {
                 .unwrap_or("postgres://postgres:postgres@localhost:5432/chess".into()),
             jwt_secret,
             cors_origins,
+            trusted_proxy_header: env::var("TRUSTED_PROXY_HEADER").ok(),
             test_mode,
         })
     }

@@ -140,11 +140,17 @@ async fn main() -> anyhow::Result<()> {
 
     // 8. Rate limit states
     // Strict: 5 req/min per IP (login, register — prevent brute force)
-    let strict_limit = RateLimitState::new(5, 60);
-    // Moderate: 30 req/min per IP (AI, move, valid_moves — prevent CPU abuse)
-    let moderate_limit = RateLimitState::new(30, 60);
+    // Moderate: 30 req/min per IP (AI, move, valid_moves, list_users — prevent CPU abuse)
     // Generous: 60 req/min per IP (general API endpoints)
-    let generous_limit = RateLimitState::new(60, 60);
+    let make_rate_limit = |max: u64, window: u64| -> RateLimitState {
+        match &config.trusted_proxy_header {
+            Some(header) => RateLimitState::with_trusted_header(max, window, header.clone()),
+            None => RateLimitState::new(max, window),
+        }
+    };
+    let strict_limit = make_rate_limit(5, 60);
+    let moderate_limit = make_rate_limit(30, 60);
+    let generous_limit = make_rate_limit(60, 60);
 
     // Spawn cleanup tasks for rate limit buckets (every 60 seconds)
     spawn_rate_limit_cleanup(strict_limit.clone(), 60);
@@ -164,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/ai/move", post(handlers::ai_handler::get_ai_move))
         .route("/api/moves/valid", post(handlers::move_handler::get_valid_moves))
         .route("/api/games/{id}/move", post(handlers::game_move_handler::make_move))
+        .route("/api/users", get(handlers::user_handler::list_users))
         .layer(axum::middleware::from_fn_with_state(
             moderate_limit,
             middleware::rate_limit::rate_limit_middleware,
@@ -174,7 +181,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users/me", put(handlers::user_handler::update_user))
         .route("/api/users/me", delete(handlers::user_handler::delete_user))
         .route("/api/users/{id}", get(handlers::user_handler::get_user))
-        .route("/api/users", get(handlers::user_handler::list_users))
         .route("/api/games", post(handlers::game_handler::create_game))
         .route("/api/games/{id}", get(handlers::game_handler::get_game))
         .route("/api/games/{id}", delete(handlers::game_handler::delete_game))
@@ -214,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
     tracing::info!("Server starting on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
 }

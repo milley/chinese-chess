@@ -2,11 +2,14 @@ use axum::Json;
 
 use crate::db::models::*;
 use crate::error::AppError;
+use crate::utils::validation::validate_position_string;
 
 /// POST /api/moves/valid — 查询合法走法
 pub async fn get_valid_moves(
     Json(data): Json<ValidMovesRequest>,
 ) -> Result<Json<ValidMovesResponse>, AppError> {
+    validate_position_string(&data.from)?;
+
     let board = chess_engine::Board::from_fen(&data.fen)
         .map_err(|e| AppError::BadRequest(format!("Invalid FEN: {}", e)))?;
 

@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::extract::State;
 use axum::http::{Request, Response, StatusCode};
 use axum::middleware::Next;
@@ -23,6 +25,10 @@ pub struct RateLimitConfig {
 pub struct RateLimitState {
     config: RateLimitConfig,
     buckets: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+    /// Optional trusted proxy header name (e.g., "x-real-ip" set by nginx).
+    /// When set, only this header is trusted for IP extraction.
+    /// When unset, uses the direct socket address via ConnectInfo.
+    trusted_header: Option<String>,
 }
 
 impl RateLimitState {
@@ -33,6 +39,19 @@ impl RateLimitState {
                 window_secs,
             },
             buckets: Arc::new(Mutex::new(HashMap::new())),
+            trusted_header: None,
+        }
+    }
+
+    /// Create with a trusted proxy header for IP extraction.
+    pub fn with_trusted_header(max_requests: u64, window_secs: u64, trusted_header: String) -> Self {
+        Self {
+            config: RateLimitConfig {
+                max_requests,
+                window_secs,
+            },
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            trusted_header: Some(trusted_header),
         }
     }
 
@@ -74,20 +93,35 @@ impl RateLimitState {
     }
 }
 
-/// Extract client IP from request headers (X-Forwarded-For or connection info).
-fn extract_client_ip(req: &Request<Body>) -> String {
-    // Check X-Forwarded-For header first (for reverse proxy setups)
-    if let Some(xff) = req.headers().get("x-forwarded-for") {
-        if let Ok(val) = xff.to_str() {
-            // X-Forwarded-For may contain multiple IPs; use the first (original client)
-            if let Some(ip) = val.split(',').next() {
-                return ip.trim().to_string();
+/// Extract client IP from request.
+///
+/// IP extraction priority:
+/// 1. If `trusted_header` is configured, use that header (set by a known reverse proxy).
+/// 2. Fall back to `ConnectInfo<SocketAddr>` (direct connection IP from the TCP socket).
+/// 3. Last resort: "unknown" (shared bucket — safe but coarse).
+///
+/// **Security note:** We do NOT trust `X-Forwarded-For` by default because it is
+/// client-controlled and trivially spoofable. Only a specifically configured header
+/// (typically set by a trusted reverse proxy like nginx) is used.
+fn extract_client_ip(req: &Request<Body>, trusted_header: Option<&str>) -> String {
+    // Only trust a specific header if configured (set by known reverse proxy)
+    if let Some(header_name) = trusted_header {
+        if let Some(val) = req.headers().get(header_name) {
+            if let Ok(ip) = val.to_str() {
+                let ip = ip.trim();
+                if !ip.is_empty() {
+                    return ip.to_string();
+                }
             }
         }
     }
 
-    // Fall back to a fixed key if no IP can be determined
-    // (this is a simple approach; in production you'd use ConnectInfo from axum)
+    // Direct connection: use socket address from ConnectInfo
+    if let Some(addr) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
+        return addr.0.ip().to_string();
+    }
+
+    // Last resort: cannot determine IP — use a shared bucket to be safe
     "unknown".to_string()
 }
 
@@ -98,7 +132,7 @@ pub async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response<Body> {
-    let client_ip = extract_client_ip(&req);
+    let client_ip = extract_client_ip(&req, state.trusted_header.as_deref());
 
     if state.check(&client_ip).await {
         next.run(req).await
@@ -147,5 +181,69 @@ mod tests {
 
         // Should be allowed again after cleanup
         assert!(state.check("3.3.3.3").await);
+    }
+
+    #[test]
+    fn test_extract_client_ip_uses_connect_info() {
+        let req = Request::builder()
+            .extension(ConnectInfo(SocketAddr::from(([192, 168, 1, 100], 12345))))
+            .body(Body::empty())
+            .unwrap();
+        let ip = extract_client_ip(&req, None);
+        assert_eq!(ip, "192.168.1.100");
+    }
+
+    #[test]
+    fn test_extract_client_ip_ignores_xff_without_trusted_header() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "1.2.3.4")
+            .header("x-real-ip", "5.6.7.8")
+            .extension(ConnectInfo(SocketAddr::from(([192, 168, 1, 100], 12345))))
+            .body(Body::empty())
+            .unwrap();
+        // Without trusted_header configured, XFF and X-Real-IP are ignored
+        let ip = extract_client_ip(&req, None);
+        assert_eq!(ip, "192.168.1.100");
+    }
+
+    #[test]
+    fn test_extract_client_ip_uses_trusted_header() {
+        let req = Request::builder()
+            .header("x-real-ip", "5.6.7.8")
+            .header("x-forwarded-for", "1.2.3.4")
+            .extension(ConnectInfo(SocketAddr::from(([192, 168, 1, 100], 12345))))
+            .body(Body::empty())
+            .unwrap();
+        // With trusted_header="x-real-ip", use that header
+        let ip = extract_client_ip(&req, Some("x-real-ip"));
+        assert_eq!(ip, "5.6.7.8");
+    }
+
+    #[test]
+    fn test_extract_client_ip_falls_back_to_unknown() {
+        let req = Request::builder()
+            .body(Body::empty())
+            .unwrap();
+        // No ConnectInfo, no trusted header → "unknown"
+        let ip = extract_client_ip(&req, None);
+        assert_eq!(ip, "unknown");
+    }
+
+    #[test]
+    fn test_extract_client_ip_trusted_header_empty_value() {
+        let req = Request::builder()
+            .header("x-real-ip", "  ")
+            .extension(ConnectInfo(SocketAddr::from(([192, 168, 1, 100], 12345))))
+            .body(Body::empty())
+            .unwrap();
+        // Empty trusted header value → fall back to ConnectInfo
+        let ip = extract_client_ip(&req, Some("x-real-ip"));
+        assert_eq!(ip, "192.168.1.100");
+    }
+
+    #[test]
+    fn test_rate_limit_with_trusted_header() {
+        let state = RateLimitState::with_trusted_header(2, 60, "x-real-ip".to_string());
+        assert_eq!(state.trusted_header, Some("x-real-ip".to_string()));
     }
 }

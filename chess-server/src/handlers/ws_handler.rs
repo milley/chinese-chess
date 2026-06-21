@@ -2,10 +2,10 @@ use axum::extract::ws::{WebSocket, Message};
 use axum::extract::State;
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::utils::auth::verify_token;
+use crate::utils::validation::{validate_game_id_string, validate_position_string, validate_token_string};
 use crate::websocket::message::{ClientMessage, ServerMessage};
 use crate::AppState;
 
@@ -19,7 +19,7 @@ pub async fn ws_handler(
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
-    let (tx, mut rx): (mpsc::UnboundedSender<String>, mpsc::UnboundedReceiver<String>) = mpsc::unbounded_channel();
+    let (tx, mut rx) = crate::websocket::client::Client::create_channel();
 
     // 启动发送任务
     let send_task = tokio::spawn(async move {
@@ -49,15 +49,19 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                 match client_msg {
                     ClientMessage::Auth { token } => {
+                        if let Err(e) = validate_token_string(&token) {
+                            tx.try_send(serde_json::to_string(&ServerMessage::Error { message: e.to_string() }).unwrap_or_default()).ok();
+                            continue;
+                        }
                         if let Ok(claims) = verify_token(&token, &state.jwt_secret) {
                             if let Ok(user_id) = Uuid::parse_str(&claims.sub) {
                                 authenticated_user = Some((user_id, claims.username, claims.exp));
                                 auth_failures = 0;
-                                tx.send(serde_json::to_string(&ServerMessage::Pong).unwrap_or_default()).ok();
+                                tx.try_send(serde_json::to_string(&ServerMessage::Pong).unwrap_or_default()).ok();
                             }
                         } else {
                             auth_failures += 1;
-                            tx.send(serde_json::to_string(&ServerMessage::Error { message: "Authentication failed".into() }).unwrap_or_default()).ok();
+                            tx.try_send(serde_json::to_string(&ServerMessage::Error { message: "Authentication failed".into() }).unwrap_or_default()).ok();
                             if auth_failures >= MAX_AUTH_FAILURES {
                                 // Too many failed auth attempts — close connection to prevent brute-force
                                 break;
@@ -69,17 +73,17 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         if let Some((_, _, exp)) = &authenticated_user {
                             let now = chrono::Utc::now().timestamp() as usize;
                             if *exp < now {
-                                tx.send(serde_json::to_string(&ServerMessage::Error {
+                                tx.try_send(serde_json::to_string(&ServerMessage::Error {
                                     message: "Token expired. Please reconnect.".into(),
                                 }).unwrap_or_default()).ok();
                                 break;
                             }
                         }
-                        tx.send(serde_json::to_string(&ServerMessage::Pong).unwrap_or_default()).ok();
+                        tx.try_send(serde_json::to_string(&ServerMessage::Pong).unwrap_or_default()).ok();
                     }
                     _ if authenticated_user.is_none() => {
                         // Reject all non-Auth/Ping messages when not authenticated
-                        tx.send(serde_json::to_string(&ServerMessage::Error {
+                        tx.try_send(serde_json::to_string(&ServerMessage::Error {
                             message: "Authentication required".into(),
                         }).unwrap_or_default()).ok();
                     }
@@ -87,7 +91,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     msg => {
                         if let Some((user_id, _, _)) = &authenticated_user {
                             if !state.ws_rate_limit.check(&user_id.to_string()).await {
-                                tx.send(serde_json::to_string(&ServerMessage::Error {
+                                tx.try_send(serde_json::to_string(&ServerMessage::Error {
                                     message: "Rate limited. Slow down.".into(),
                                 }).unwrap_or_default()).ok();
                                 continue;
@@ -95,6 +99,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                         match msg {
                             ClientMessage::MakeMove { game_id, from, to } => {
+                                if validate_game_id_string(&game_id).is_err()
+                                    || validate_position_string(&from).is_err()
+                                    || validate_position_string(&to).is_err() {
+                                        tx.try_send(serde_json::to_string(&ServerMessage::Error {
+                                            message: "Invalid move format".into(),
+                                        }).unwrap_or_default()).ok();
+                                        continue;
+                                    }
                                 if let Some((user_id, _username, _)) = &authenticated_user
                                     && let Ok(gid) = Uuid::parse_str(&game_id) {
                                         let room = state.room_manager.get_or_create_room(gid).await;
@@ -105,7 +117,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                     game_id: game_id.clone(),
                                                     reason: "Game is not in progress".into(),
                                                 };
-                                                tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                                tx.try_send(serde_json::to_string(&msg).unwrap_or_default()).ok();
                                                 continue;
                                             }
                                             // Determine player color from room (in-memory, no DB query)
@@ -137,13 +149,19 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                         game_id: game_id.clone(),
                                                         reason: e,
                                                     };
-                                                    tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                                    tx.try_send(serde_json::to_string(&msg).unwrap_or_default()).ok();
                                                 }
                                             }
                                         }
                                     }
                             }
                             ClientMessage::JoinGame { game_id } => {
+                                if validate_game_id_string(&game_id).is_err() {
+                                    tx.try_send(serde_json::to_string(&ServerMessage::Error {
+                                        message: "Invalid game ID format".into(),
+                                    }).unwrap_or_default()).ok();
+                                    continue;
+                                }
                                 if let Some((user_id, username, _)) = &authenticated_user
                                     && let Ok(gid) = Uuid::parse_str(&game_id) {
                                         if !current_game_ids.contains(&gid) {
@@ -176,7 +194,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                 color: color_str.to_string(),
                                                 fen: fen.clone(),
                                             };
-                                            tx.send(serde_json::to_string(&joined_msg).unwrap_or_default()).ok();
+                                            tx.try_send(serde_json::to_string(&joined_msg).unwrap_or_default()).ok();
 
                                             // Notify opponent
                                             let opponent_user_id = room.opponent_player_id(color).await;
@@ -221,6 +239,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                             }
                             ClientMessage::LeaveGame { game_id } => {
+                                if validate_game_id_string(&game_id).is_err() { continue; }
                                 if let Some((user_id, _, _)) = &authenticated_user
                                     && let Ok(gid) = Uuid::parse_str(&game_id) {
                                         let room = state.room_manager.get_or_create_room(gid).await;
@@ -234,6 +253,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                             }
                             ClientMessage::Resign { game_id } => {
+                                if validate_game_id_string(&game_id).is_err() { continue; }
                                 if let Some((user_id, _, _)) = &authenticated_user
                                     && let Ok(gid) = Uuid::parse_str(&game_id) {
                                         let room = state.room_manager.get_or_create_room(gid).await;
@@ -246,17 +266,19 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                             }
                             ClientMessage::OfferDraw { game_id } => {
+                                if validate_game_id_string(&game_id).is_err() { continue; }
                                 if let Some((user_id, _, _)) = &authenticated_user
                                     && let Ok(gid) = Uuid::parse_str(&game_id) {
                                         let room = state.room_manager.get_or_create_room(gid).await;
                                         if let Ok(room) = room
                                             && let Err(e) = room.offer_draw(*user_id).await {
                                                 let msg = ServerMessage::Error { message: e };
-                                                tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                                tx.try_send(serde_json::to_string(&msg).unwrap_or_default()).ok();
                                             }
                                     }
                             }
                             ClientMessage::RespondDraw { game_id, accept } => {
+                                if validate_game_id_string(&game_id).is_err() { continue; }
                                 if let Some((user_id, _, _)) = &authenticated_user
                                     && let Ok(gid) = Uuid::parse_str(&game_id) {
                                         let room = state.room_manager.get_or_create_room(gid).await;
@@ -272,7 +294,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                 }
                                                 Err(e) => {
                                                     let msg = ServerMessage::Error { message: e };
-                                                    tx.send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                                    tx.try_send(serde_json::to_string(&msg).unwrap_or_default()).ok();
                                                 }
                                             }
                                         }
@@ -290,17 +312,22 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     }
 
-    // 断连清理: 从所有已加入的房间移除玩家并通知对手
-    // If a player disconnects mid-game, it counts as a loss (resignation by disconnect).
+    // 断连清理: 从所有已加入的房间标记玩家断连并启动宽限期
+    // Grace period: player has 30 seconds to reconnect before game ends.
+    // The timeout checker (in RoomManager) will end the game if the grace period expires.
     if let Some((user_id, _, _)) = &authenticated_user {
         for gid in &current_game_ids {
             let room = state.room_manager.get_or_create_room(*gid).await;
-            if let Ok(room) = room
-                && let Ok(Some((_, result_str, reason_str))) = room.handle_disconnect(*user_id).await {
+            if let Ok(room) = room {
+                // mark_disconnected starts the grace period — game does NOT end immediately
+                let result = room.mark_disconnected(*user_id).await;
+                // If result is Some, game ended immediately (spectator or already-over game)
+                if let Ok(Some((_, result_str, reason_str))) = result {
                     let fen = room.fen().await;
                     let moves_json = room.move_history_json().await;
                     state.persist_game_end(*gid, &result_str, &reason_str, &fen, &moves_json).await;
                 }
+            }
         }
     }
 
