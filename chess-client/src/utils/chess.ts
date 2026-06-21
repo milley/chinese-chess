@@ -29,9 +29,24 @@ export function parseFen(fen: string): Map<string, { type: string; color: 'red' 
   return pieces;
 }
 
-/** Find the king position for the given color from the FEN. */
-export function findKing(fen: string, color: 'red' | 'black'): { col: number; row: number } | null {
-  const pieces = parseFen(fen);
+/** Create a memoization cache for parseFen. Returns the cached Map when the FEN hasn't changed. */
+export function createFenCache() {
+  let cachedFen = '';
+  let cachedPieces: Map<string, { type: string; color: 'red' | 'black' }> = new Map();
+  return {
+    getPieces(fen: string): Map<string, { type: string; color: 'red' | 'black' }> {
+      if (fen !== cachedFen) {
+        cachedFen = fen;
+        cachedPieces = parseFen(fen);
+      }
+      return cachedPieces;
+    }
+  };
+}
+
+/** Find the king position for the given color. Accepts either a FEN string or a pre-parsed pieces Map. */
+export function findKing(fenOrPieces: string | Map<string, { type: string; color: 'red' | 'black' }>, color: 'red' | 'black'): { col: number; row: number } | null {
+  const pieces = typeof fenOrPieces === 'string' ? parseFen(fenOrPieces) : fenOrPieces;
   const kingName = color === 'red' ? '帅' : '将';
   for (const [key, piece] of pieces) {
     if (piece.type === kingName && piece.color === color) {

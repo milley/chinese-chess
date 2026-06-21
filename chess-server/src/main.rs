@@ -28,6 +28,8 @@ pub struct AppState {
     pub game_repo: GameRepository,
     pub room_manager: RoomManager,
     pub jwt_secret: String,
+    /// Per-user rate limiter for WS game-action messages (30 msgs/10s)
+    pub ws_rate_limit: RateLimitState,
 }
 
 impl AppState {
@@ -105,11 +107,16 @@ async fn main() -> anyhow::Result<()> {
     let room_manager = RoomManager::with_repos(game_repo.clone(), user_repo.clone());
     room_manager.start_timeout_checker();
 
+    // WS rate limiter: 30 game-action messages per 10 seconds per user
+    let ws_rate_limit = RateLimitState::new(30, 10);
+    spawn_rate_limit_cleanup(ws_rate_limit.clone(), 60);
+
     let state = AppState {
         user_repo,
         game_repo,
         room_manager,
         jwt_secret: config.jwt_secret.clone(),
+        ws_rate_limit,
     };
 
     // 7. 构建 CORS 层
@@ -192,6 +199,11 @@ async fn main() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             state.jwt_secret.clone(),
             middleware::add_jwt_secret_to_extensions,
+        ))
+        // Content-Security-Policy header to mitigate XSS attacks
+        .layer(tower_http::set_header::SetResponseHeaderLayer::if_not_present(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            axum::http::HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self';"),
         ))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

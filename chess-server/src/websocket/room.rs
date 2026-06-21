@@ -85,6 +85,10 @@ pub struct GameRoom {
     move_log: Arc<RwLock<Vec<MoveEntry>>>,
     /// 数据库仓库 (trait object for testability)
     game_repo: Arc<dyn GameRepo>,
+    /// Red player's user ID (from DB game record, persists across disconnect/reconnect)
+    red_player_id: Option<Uuid>,
+    /// Black player's user ID (from DB game record, persists across disconnect/reconnect)
+    black_player_id: Option<Uuid>,
 }
 
 impl GameRoom {
@@ -96,26 +100,7 @@ impl GameRoom {
         move_time_limit: Option<i32>,
         byoyomi: Option<i32>,
     ) -> Self {
-        let game_state = chess_engine::GameState::from_fen(fen)
-            .unwrap_or_else(|_| chess_engine::GameState::new());
-
-        let tc = if time_control.is_some() || move_time_limit.is_some() || byoyomi.is_some() {
-            Some(chess_engine::TimeControl::new(time_control, move_time_limit, byoyomi))
-        } else {
-            None
-        };
-
-        Self {
-            game_state: Arc::new(RwLock::new(game_state)),
-            game_id,
-            red_player: Arc::new(RwLock::new(None)),
-            black_player: Arc::new(RwLock::new(None)),
-            spectators: Arc::new(RwLock::new(Vec::new())),
-            time_control: Arc::new(RwLock::new(tc)),
-            draw_offer: Arc::new(RwLock::new(None)),
-            move_log: Arc::new(RwLock::new(Vec::new())),
-            game_repo,
-        }
+        Self::new_with_ids(game_id, fen, game_repo, time_control, move_time_limit, byoyomi, None, None, None, None)
     }
 
     /// Create a room restoring from persisted DB state (for server restart recovery).
@@ -129,20 +114,46 @@ impl GameRoom {
         byoyomi: Option<i32>,
         red_time: Option<i32>,
         black_time: Option<i32>,
+        red_player_id: Option<Uuid>,
+        black_player_id: Option<Uuid>,
+    ) -> Self {
+        Self::new_with_ids(game_id, fen, game_repo, time_control, move_time_limit, byoyomi, red_time, black_time, red_player_id, black_player_id)
+    }
+
+    /// Full constructor with all optional fields including player IDs.
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_ids(
+        game_id: Uuid,
+        fen: &str,
+        game_repo: Arc<dyn GameRepo>,
+        time_control: Option<i32>,
+        move_time_limit: Option<i32>,
+        byoyomi: Option<i32>,
+        red_time: Option<i32>,
+        black_time: Option<i32>,
+        red_player_id: Option<Uuid>,
+        black_player_id: Option<Uuid>,
     ) -> Self {
         let game_state = chess_engine::GameState::from_fen(fen)
             .unwrap_or_else(|_| chess_engine::GameState::new());
 
         let tc = if time_control.is_some() || move_time_limit.is_some() || byoyomi.is_some() {
-            let red_remaining = red_time.unwrap_or(0);
-            let black_remaining = black_time.unwrap_or(0);
-            Some(chess_engine::TimeControl::new_with_state(
-                time_control,
-                move_time_limit,
-                byoyomi,
-                red_remaining,
-                black_remaining,
-            ))
+            match (red_time, black_time) {
+                (Some(rt), Some(bt)) => {
+                    // Restoring from persisted state — use saved remaining times
+                    Some(chess_engine::TimeControl::new_with_state(
+                        time_control,
+                        move_time_limit,
+                        byoyomi,
+                        rt,
+                        bt,
+                    ))
+                }
+                _ => {
+                    // Fresh room — use initial time values
+                    Some(chess_engine::TimeControl::new(time_control, move_time_limit, byoyomi))
+                }
+            }
         } else {
             None
         };
@@ -157,6 +168,28 @@ impl GameRoom {
             draw_offer: Arc::new(RwLock::new(None)),
             move_log: Arc::new(RwLock::new(Vec::new())),
             game_repo,
+            red_player_id,
+            black_player_id,
+        }
+    }
+
+    /// Determine player color from the DB-stored player IDs.
+    /// Works even when the player is disconnected (unlike `player_color` which checks live slots).
+    pub fn player_color_from_db(&self, user_id: Uuid) -> Result<chess_engine::Color, String> {
+        if self.red_player_id == Some(user_id) {
+            Ok(chess_engine::Color::Red)
+        } else if self.black_player_id == Some(user_id) {
+            Ok(chess_engine::Color::Black)
+        } else {
+            Err("You are not a player in this game".into())
+        }
+    }
+
+    /// Get the opponent's user ID for a given color from the DB-stored player IDs.
+    pub async fn opponent_player_id(&self, color: chess_engine::Color) -> Option<Uuid> {
+        match color {
+            chess_engine::Color::Red => self.black_player_id,
+            chess_engine::Color::Black => self.red_player_id,
         }
     }
 
@@ -188,7 +221,9 @@ impl GameRoom {
         let repo = self.game_repo.clone();
         let game_id = self.game_id;
         tokio::spawn(async move {
-            let _ = repo.append_event(game_id, "join".to_string(), Some(user_id), serde_json::json!({ "color": color_str })).await;
+            if let Err(e) = repo.append_event(game_id, "join".to_string(), Some(user_id), serde_json::json!({ "color": color_str })).await {
+                tracing::info!("Failed to append join event for game {}: {}", game_id, e);
+            }
         });
         // Check if both players are now present
         let red = self.red_player.read().await;
@@ -339,15 +374,19 @@ impl GameRoom {
         let ev_color_str = color_str.to_string();
         let ev_user_id = _user_id;
         tokio::spawn(async move {
-            let _ = repo.append_event(game_id, "move".to_string(), Some(ev_user_id), serde_json::json!({
+            if let Err(e) = repo.append_event(game_id, "move".to_string(), Some(ev_user_id), serde_json::json!({
                 "from": ev_from, "to": ev_to, "fen": ev_fen,
                 "is_check": ev_is_check, "color": ev_color_str,
                 "time_spent": ev_time_spent, "red_time": ev_red_time, "black_time": ev_black_time,
-            })).await;
+            })).await {
+                tracing::info!("Failed to append move event for game {}: {}", game_id, e);
+            }
             if ev_is_check && !ev_result.as_ref().is_some_and(|r| r == "red_win" || r == "black_win") {
-                let _ = repo.append_event(game_id, "check".to_string(), Some(ev_user_id), serde_json::json!({
+                if let Err(e) = repo.append_event(game_id, "check".to_string(), Some(ev_user_id), serde_json::json!({
                     "by": ev_color_str, "fen": ev_fen,
-                })).await;
+                })).await {
+                    tracing::info!("Failed to append check event for game {}: {}", game_id, e);
+                }
             }
             if let (Some(res), Some(reason)) = (&ev_result, &ev_end_reason) {
                 let event_type = match reason.as_str() {
@@ -355,9 +394,11 @@ impl GameRoom {
                     "stalemate" => "stalemate".to_string(),
                     _ => "game_over".to_string(),
                 };
-                let _ = repo.append_event(game_id, event_type, Some(ev_user_id), serde_json::json!({
+                if let Err(e) = repo.append_event(game_id, event_type, Some(ev_user_id), serde_json::json!({
                     "result": res, "reason": reason,
-                })).await;
+                })).await {
+                    tracing::info!("Failed to append game-over event for game {}: {}", game_id, e);
+                }
             }
         });
 
@@ -414,9 +455,11 @@ impl GameRoom {
             chess_engine::Color::Black => "black",
         };
         tokio::spawn(async move {
-            let _ = repo.append_event(game_id, "resign".to_string(), Some(user_id), serde_json::json!({
+            if let Err(e) = repo.append_event(game_id, "resign".to_string(), Some(user_id), serde_json::json!({
                 "color": ev_color, "result": ev_result, "reason": ev_reason,
-            })).await;
+            })).await {
+                tracing::info!("Failed to append resign event for game {}: {}", game_id, e);
+            }
         });
 
         Ok((self.game_id.to_string(), result_str.to_string(), reason_str.to_string()))
@@ -453,9 +496,11 @@ impl GameRoom {
             chess_engine::Color::Black => "black",
         };
         tokio::spawn(async move {
-            let _ = repo.append_event(game_id, "draw_offer".to_string(), Some(user_id), serde_json::json!({
+            if let Err(e) = repo.append_event(game_id, "draw_offer".to_string(), Some(user_id), serde_json::json!({
                 "color": ev_color,
-            })).await;
+            })).await {
+                tracing::info!("Failed to append draw_offer event for game {}: {}", game_id, e);
+            }
         });
 
         Ok(())
@@ -520,9 +565,11 @@ impl GameRoom {
             let repo = self.game_repo.clone();
             let game_id = self.game_id;
             tokio::spawn(async move {
-                let _ = repo.append_event(game_id, "draw_respond".to_string(), Some(user_id), serde_json::json!({
+                if let Err(e) = repo.append_event(game_id, "draw_respond".to_string(), Some(user_id), serde_json::json!({
                     "accepted": true, "result": "draw", "reason": "draw_agreement",
-                })).await;
+                })).await {
+                    tracing::info!("Failed to append draw_accept event for game {}: {}", game_id, e);
+                }
             });
 
             Ok(Some((self.game_id.to_string(), "draw".to_string(), "draw_agreement".to_string())))
@@ -540,9 +587,11 @@ impl GameRoom {
             let repo = self.game_repo.clone();
             let game_id = self.game_id;
             tokio::spawn(async move {
-                let _ = repo.append_event(game_id, "draw_respond".to_string(), Some(user_id), serde_json::json!({
+                if let Err(e) = repo.append_event(game_id, "draw_respond".to_string(), Some(user_id), serde_json::json!({
                     "accepted": false,
-                })).await;
+                })).await {
+                    tracing::info!("Failed to append draw_decline event for game {}: {}", game_id, e);
+                }
             });
 
             Ok(None)
@@ -601,9 +650,11 @@ impl GameRoom {
             chess_engine::Color::Black => "black",
         };
         tokio::spawn(async move {
-            let _ = repo.append_event(game_id, "leave".to_string(), Some(user_id), serde_json::json!({
+            if let Err(e) = repo.append_event(game_id, "leave".to_string(), Some(user_id), serde_json::json!({
                 "color": ev_color, "result": ev_result, "reason": ev_reason,
-            })).await;
+            })).await {
+                tracing::info!("Failed to append leave event for game {}: {}", game_id, e);
+            }
         });
 
         Ok(Some((self.game_id.to_string(), result_str.to_string(), reason_str.to_string())))
@@ -669,9 +720,11 @@ impl GameRoom {
             chess_engine::Color::Black => "black",
         };
         tokio::spawn(async move {
-            let _ = repo.append_event(game_id, "disconnect".to_string(), Some(user_id), serde_json::json!({
+            if let Err(e) = repo.append_event(game_id, "disconnect".to_string(), Some(user_id), serde_json::json!({
                 "color": ev_color, "result": ev_result, "reason": ev_reason,
-            })).await;
+            })).await {
+                tracing::info!("Failed to append disconnect event for game {}: {}", game_id, e);
+            }
         });
 
         Ok(Some((self.game_id.to_string(), result_str.to_string(), reason_str.to_string())))
@@ -714,7 +767,7 @@ impl GameRoom {
             chess_engine::Color::Black => self.red_player.read().await,
         };
         if let Some(client) = player.as_ref() {
-            let _ = client.send(&json); // Ignore send failure — handled on disconnect
+            let _ = client.send(&json); // Intentionally ignored — dead channel handled on disconnect
         }
     }
 
@@ -787,7 +840,9 @@ impl GameRoom {
             let repo = self.game_repo.clone();
             let game_id = self.game_id;
             tokio::spawn(async move {
-                let _ = repo.append_event(game_id, "time_activate".to_string(), None, serde_json::json!({})).await;
+                if let Err(e) = repo.append_event(game_id, "time_activate".to_string(), None, serde_json::json!({})).await {
+                    tracing::info!("Failed to append time_activate event for game {}: {}", game_id, e);
+                }
             });
         }
     }
@@ -841,7 +896,9 @@ impl GameRoom {
         if let Some(ref tc) = *tc {
             let red_remaining = tc.remaining(chess_engine::Color::Red);
             let black_remaining = tc.remaining(chess_engine::Color::Black);
-            let _ = self.game_repo.update_time(self.game_id, red_remaining, black_remaining).await;
+            if let Err(e) = self.game_repo.update_time(self.game_id, red_remaining, black_remaining).await {
+                tracing::warn!("Failed to persist time for game {}: {}", self.game_id, e);
+            }
         }
     }
 

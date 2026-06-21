@@ -24,7 +24,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
-import { parseFen, findKing, parseUciPosition, getSideToMove, getDisplayPosition as getDisplayPositionUtil, pixelToPosition as pixelToPositionUtil, BOARD_COLS, BOARD_ROWS, CELL_SIZE, PADDING } from '../utils/chess';
+import { parseFen, findKing, createFenCache, parseUciPosition, getSideToMove, getDisplayPosition as getDisplayPositionUtil, pixelToPosition as pixelToPositionUtil, BOARD_COLS, BOARD_ROWS, CELL_SIZE, PADDING } from '../utils/chess';
 
 const props = defineProps<{
   fen: string;
@@ -46,6 +46,12 @@ const wrapperRef = ref<HTMLDivElement | null>(null);
 const dpr = ref(window.devicePixelRatio || 1);
 const scale = ref(1);
 let resizeObserver: ResizeObserver | null = null;
+
+// FEN memoization cache — avoids re-parsing the same FEN on every frame during drag
+const fenCache = createFenCache();
+
+// requestAnimationFrame throttle — prevents 60fps redraw during drag
+let rafId: number | null = null;
 
 // Drag-and-drop state
 const isDragging = ref(false);
@@ -157,10 +163,8 @@ function draw() {
   }
 
   // Determine which king is in check for the check highlight
-  const checkedKingPos = props.isCheck ? findKing(props.fen, getSideToMove(props.fen)) : null;
-
-  // Pieces
-  const pieces = parseFen(props.fen);
+  const pieces = fenCache.getPieces(props.fen);
+  const checkedKingPos = props.isCheck ? findKing(pieces, getSideToMove(props.fen)) : null;
   for (const [key, piece] of pieces) {
     const [col, row] = key.split(',').map(Number);
 
@@ -303,7 +307,7 @@ function handleMouseDown(event: MouseEvent) {
   if (!position) return;
 
   // Check if there's a piece at this position
-  const pieces = parseFen(props.fen);
+  const pieces = fenCache.getPieces(props.fen);
   const pos = parseUciPosition(position);
   if (!pos) return;
 
@@ -336,7 +340,13 @@ function handleMouseMove(event: MouseEvent) {
     dragY.value = event.clientY - rect.top;
   }
 
-  draw();
+  // Throttle redraws with requestAnimationFrame to avoid 60fps FEN re-parsing
+  if (rafId === null) {
+    rafId = requestAnimationFrame(() => {
+      draw();
+      rafId = null;
+    });
+  }
 }
 
 function handleMouseUp(event: MouseEvent) {
@@ -365,7 +375,7 @@ function handleTouchStart(event: TouchEvent) {
   if (!position) return;
 
   // Check if there's a piece at this position
-  const pieces = parseFen(props.fen);
+  const pieces = fenCache.getPieces(props.fen);
   const pos = parseUciPosition(position);
   if (!pos) return;
 
@@ -403,7 +413,13 @@ function handleTouchMove(event: TouchEvent) {
     dragY.value = touch.clientY - rect.top;
   }
 
-  draw();
+  // Throttle redraws with requestAnimationFrame to avoid 60fps FEN re-parsing
+  if (rafId === null) {
+    rafId = requestAnimationFrame(() => {
+      draw();
+      rafId = null;
+    });
+  }
 }
 
 function handleTouchEnd(event: TouchEvent) {
@@ -447,6 +463,10 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
   resizeObserver?.disconnect();
 });
 </script>

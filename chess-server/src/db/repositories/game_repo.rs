@@ -223,15 +223,23 @@ impl GameRepository {
         // This prevents the TOCTOU race between reading MAX(seq_num) and
         // inserting, which could produce duplicate seq_num values under
         // concurrent writes.
-        let lock_key1 = game_id.as_u128() as i32;
-        let lock_key2 = (game_id.as_u128() >> 32) as i32;
+        //
+        // The lock key is derived by hashing all 128 bits of the UUID into a
+        // single i64, using XOR-folding + FNV-like prime multiplication.
+        // This avoids the collision risk of the previous approach which only
+        // used the lower 64 bits (discarding bits 64-127).
+        let uuid_u128 = game_id.as_u128();
+        let hash = (((uuid_u128 as u64)
+            ^ ((uuid_u128 >> 32) as u64)
+            ^ ((uuid_u128 >> 64) as u64)
+            ^ ((uuid_u128 >> 96) as u64))
+            .wrapping_mul(0x5bd1e995)) as i64;
 
         let mut tx = self.pool.begin().await?;
 
-        // Acquire advisory lock within the transaction
-        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
-            .bind(lock_key1)
-            .bind(lock_key2)
+        // Acquire advisory lock within the transaction (single bigint key)
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(hash)
             .execute(&mut *tx)
             .await?;
 

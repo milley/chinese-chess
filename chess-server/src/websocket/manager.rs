@@ -103,6 +103,8 @@ impl RoomManager {
             game.byoyomi,
             red_time,
             black_time,
+            game.red_player_id,
+            game.black_player_id,
         ));
 
         // If game is already playing, activate time control
@@ -246,9 +248,11 @@ impl RoomManager {
                                     chess_engine::Color::Black => "black",
                                 };
                                 tokio::spawn(async move {
-                                    let _ = ev_repo.append_event(ev_game_id, "timeout".to_string(), None, serde_json::json!({
+                                    if let Err(e) = ev_repo.append_event(ev_game_id, "timeout".to_string(), None, serde_json::json!({
                                         "color": ev_color, "result": result_str, "reason": reason_str,
-                                    })).await;
+                                    })).await {
+                                        tracing::info!("Failed to append timeout event for game {}: {}", ev_game_id, e);
+                                    }
                                 });
 
                                 // Broadcast GameOver
@@ -291,7 +295,9 @@ impl RoomManager {
                                 if should_persist {
                                     room.persist_time().await;
                                     // Record last_tick_at for crash recovery
-                                    let _ = game_repo.update_last_tick(game_id).await;
+                                    if let Err(e) = game_repo.update_last_tick(game_id).await {
+                                        tracing::warn!("Failed to update last_tick_at for game {}: {}", game_id, e);
+                                    }
                                 }
                             }
                         }

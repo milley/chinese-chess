@@ -22,6 +22,8 @@ class WebSocketService {
   private wasConnected = false;
   // Message queue for offline sends — messages are replayed on reconnect
   private pendingMessages: WsClientMessage[] = [];
+  // Maximum queued messages — oldest are dropped when the limit is reached
+  private static MAX_PENDING = 50;
 
   /** Check if WebSocket is currently connected and ready to send messages. */
   get isConnected(): boolean {
@@ -132,7 +134,17 @@ class WebSocketService {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
     } else {
-      // Queue the message for later — it will be replayed on reconnect
+      // Deduplicate: for make_move messages, remove any existing make_move
+      // for the same game_id (only the latest move matters)
+      if (message.type === 'make_move') {
+        this.pendingMessages = this.pendingMessages.filter(
+          m => !(m.type === 'make_move' && m.game_id === message.game_id)
+        );
+      }
+      // Enforce max queue size — drop oldest if over limit
+      if (this.pendingMessages.length >= WebSocketService.MAX_PENDING) {
+        this.pendingMessages.shift();
+      }
       this.pendingMessages.push(message);
     }
   }
