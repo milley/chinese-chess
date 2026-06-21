@@ -1,5 +1,6 @@
 use crate::pieces::{Color, Piece, PieceType, Move};
 use super::Position;
+use super::zobrist::{piece_key, side_key};
 
 /// 中国象棋初始局面 FEN
 const INITIAL_FEN: &str = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1";
@@ -25,6 +26,8 @@ pub struct Board {
     red_king_pos: Option<Position>,
     /// 黑方将位置缓存
     black_king_pos: Option<Position>,
+    /// Zobrist 哈希值 (增量维护)
+    zobrist_hash: u64,
 }
 
 impl Board {
@@ -37,6 +40,7 @@ impl Board {
             black_material_score: 0,
             red_king_pos: None,
             black_king_pos: None,
+            zobrist_hash: 0,
         }
     }
 
@@ -85,7 +89,10 @@ impl Board {
         if parts.len() > 1 {
             match parts[1] {
                 "w" => board.side_to_move = Color::Red,
-                "b" => board.side_to_move = Color::Black,
+                "b" => {
+                    board.side_to_move = Color::Black;
+                    board.zobrist_hash ^= side_key();
+                }
                 _ => return Err(format!("Invalid side to move: '{}'", parts[1])),
             }
         }
@@ -146,6 +153,8 @@ impl Board {
                 Color::Black => self.black_king_pos = Some(pos),
             }
         }
+        // 更新 Zobrist 哈希
+        self.zobrist_hash ^= piece_key(piece, pos_index(pos));
         self.squares[pos_index(pos)] = Some(piece);
     }
 
@@ -201,7 +210,14 @@ impl Board {
         let from_idx = pos_index(m.from);
         let to_idx = pos_index(m.to);
         let piece = self.squares[from_idx].take().expect("Piece must exist at from position");
+
+        // 更新 Zobrist: 移除起点棋子
+        self.zobrist_hash ^= piece_key(piece, from_idx);
+
         let captured = self.squares[to_idx].replace(piece);
+
+        // 更新 Zobrist: 放置棋子到终点
+        self.zobrist_hash ^= piece_key(piece, to_idx);
 
         // 更新物质分
         if let Some(cap) = captured {
@@ -209,6 +225,8 @@ impl Board {
                 Color::Red => self.red_material_score -= cap.base_value(),
                 Color::Black => self.black_material_score -= cap.base_value(),
             }
+            // 更新 Zobrist: 移除被吃棋子
+            self.zobrist_hash ^= piece_key(cap, to_idx);
         }
 
         // 更新将帅位置缓存
@@ -227,21 +245,49 @@ impl Board {
                 }
             }
 
-        // 切换走子方
+        // 切换走子方 + 更新 Zobrist side key
         self.side_to_move = self.side_to_move.opposite();
+        self.zobrist_hash ^= side_key();
 
         captured
     }
 
-    /// 撤销走法
+    /// 撤销走法，恢复被吃棋子
     pub fn undo_move(&mut self, m: Move, captured: Option<Piece>) {
-        // 恢复走子方
-        self.side_to_move = self.side_to_move.opposite();
-
         let from_idx = pos_index(m.from);
         let to_idx = pos_index(m.to);
+
+        // 恢复 Zobrist: 还原走子方
+        self.zobrist_hash ^= side_key();
+
         let piece = self.squares[to_idx].take().expect("Piece must exist at to position");
+
+        // 恢复 Zobrist: 移除终点棋子
+        self.zobrist_hash ^= piece_key(piece, to_idx);
+
+        // 恢复被吃棋子
+        if let Some(cap) = captured {
+            self.squares[to_idx] = Some(cap);
+            match cap.color {
+                Color::Red => self.red_material_score += cap.base_value(),
+                Color::Black => self.black_material_score += cap.base_value(),
+            }
+            // 恢复 Zobrist: 放回被吃棋子
+            self.zobrist_hash ^= piece_key(cap, to_idx);
+            // 恢复被吃将帅的位置缓存
+            if cap.piece_type == PieceType::King {
+                match cap.color {
+                    Color::Red => self.red_king_pos = Some(m.to),
+                    Color::Black => self.black_king_pos = Some(m.to),
+                }
+            }
+        }
+
+        // 恢复原棋子
         self.squares[from_idx] = Some(piece);
+
+        // 恢复 Zobrist: 放回起点棋子
+        self.zobrist_hash ^= piece_key(piece, from_idx);
 
         // 恢复将帅位置缓存
         if piece.piece_type == PieceType::King {
@@ -251,21 +297,8 @@ impl Board {
             }
         }
 
-        // 恢复被吃棋子
-        if let Some(cap) = captured {
-            match cap.color {
-                Color::Red => self.red_material_score += cap.base_value(),
-                Color::Black => self.black_material_score += cap.base_value(),
-            }
-            // 恢复被吃将帅的位置缓存
-            if cap.piece_type == PieceType::King {
-                match cap.color {
-                    Color::Red => self.red_king_pos = Some(m.to),
-                    Color::Black => self.black_king_pos = Some(m.to),
-                }
-            }
-            self.squares[to_idx] = Some(cap);
-        }
+        // 恢复走子方
+        self.side_to_move = self.side_to_move.opposite();
     }
 
     /// 坐标是否在棋盘内
@@ -284,6 +317,11 @@ impl Board {
             Color::Red => self.red_king_pos,
             Color::Black => self.black_king_pos,
         }
+    }
+
+    /// 获取 Zobrist 哈希值 (用于置换表等)
+    pub fn zobrist_hash(&self) -> u64 {
+        self.zobrist_hash
     }
 }
 

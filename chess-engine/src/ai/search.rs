@@ -3,18 +3,36 @@ use crate::game::GameState;
 use crate::pieces::{Color, PieceType, Move};
 use crate::rules::is_in_check;
 use crate::ai::eval::evaluate_fast;
+use crate::ai::tt::{TranspositionTable, TTFlag};
 
 /// 静态搜索最大深度
 const MAX_QUIESCENCE_DEPTH: u8 = 4;
 
-/// Alpha-Beta 搜索入口
+/// Alpha-Beta 搜索入口 (接受 GameState，兼容公共 API)
 /// 返回最佳走法及评估分数
 pub fn find_best_move(state: &GameState, depth: u8) -> Option<(Move, i32)> {
     if state.is_game_over() {
         return None;
     }
+    let mut board = state.board().clone();
+    let mut tt = TranspositionTable::default_size();
+    find_best_move_board(&mut board, depth, &mut tt)
+}
 
-    let moves = state.generate_legal_moves();
+/// Alpha-Beta 搜索入口 (接受 Board + TT，可复用置换表)
+pub fn find_best_move_with_tt(board: &mut Board, depth: u8, tt: &mut TranspositionTable) -> Option<(Move, i32)> {
+    let color = board.side_to_move();
+    let moves = board.generate_legal_moves(color);
+    if moves.is_empty() {
+        return None;
+    }
+    find_best_move_board(board, depth, tt)
+}
+
+/// Alpha-Beta 搜索核心 (直接操作 Board，使用置换表)
+fn find_best_move_board(board: &mut Board, depth: u8, tt: &mut TranspositionTable) -> Option<(Move, i32)> {
+    let color = board.side_to_move();
+    let moves = board.generate_legal_moves(color);
     if moves.is_empty() {
         return None;
     }
@@ -22,17 +40,16 @@ pub fn find_best_move(state: &GameState, depth: u8) -> Option<(Move, i32)> {
     let mut best_move = None;
     let mut best_score = i32::MIN + 1;
 
-    // MVV-LVA 走法排序
-    let sorted_moves = sort_moves(&moves, state.board());
+    // MVV-LVA 走法排序 + TT 最佳走法优先
+    let sorted_moves = sort_moves(&moves, board, tt);
 
     for m in sorted_moves {
-        let mut new_state = state.clone();
-        if new_state.make_move(m).is_err() {
-            continue;
-        }
+        let captured = board.make_move(m);
         // Negamax: 对手视角搜索，取负
         // 使用 MIN+1 避免取负溢出
-        let score = -alpha_beta(&new_state, depth - 1, i32::MIN + 1, i32::MAX);
+        let score = -alpha_beta(board, depth - 1, i32::MIN + 1, i32::MAX, tt);
+        board.undo_move(m, captured);
+
         if score > best_score {
             best_score = score;
             best_move = Some(m);
@@ -47,18 +64,39 @@ pub fn find_best_move_simple(state: &GameState, depth: u8) -> Option<Move> {
     find_best_move(state, depth).map(|(m, _)| m)
 }
 
-/// Alpha-Beta 搜索 (Negamax 格式)
-fn alpha_beta(state: &GameState, depth: u8, mut alpha: i32, beta: i32) -> i32 {
-    if depth == 0 {
-        return quiescence_search(state, alpha, beta, MAX_QUIESCENCE_DEPTH);
+/// Alpha-Beta 搜索 (Negamax 格式，直接操作 Board，带置换表)
+fn alpha_beta(board: &mut Board, depth: u8, mut alpha: i32, beta: i32, tt: &mut TranspositionTable) -> i32 {
+    let hash = board.zobrist_hash();
+    let orig_alpha = alpha;
+
+    // 置换表查找
+    if let Some(entry) = tt.probe(hash, depth) {
+        match entry.flag {
+            TTFlag::Exact => return entry.score,
+            TTFlag::Lower if entry.score >= beta => return entry.score,
+            TTFlag::Upper if entry.score <= alpha => return entry.score,
+            _ => {}
+        }
+        // Use stored alpha/beta bounds to narrow window
+        if entry.flag == TTFlag::Lower && entry.score > alpha {
+            alpha = entry.score;
+        }
+        if entry.flag == TTFlag::Upper && entry.score < beta {
+            // Can't narrow beta directly, but we have an upper bound
+        }
     }
 
-    let color = state.side_to_move();
-    let moves = state.board().generate_legal_moves(color);
+    if depth == 0 {
+        let score = quiescence_search(board, alpha, beta, MAX_QUIESCENCE_DEPTH);
+        return score;
+    }
+
+    let color = board.side_to_move();
+    let moves = board.generate_legal_moves(color);
 
     if moves.is_empty() {
         // 将杀或困毙
-        if is_in_check(state.board(), color) {
+        if is_in_check(board, color) {
             // 被将杀，越浅越差（偏好更短的将杀路径）
             return -(10000 + depth as i32);
         } else {
@@ -67,34 +105,55 @@ fn alpha_beta(state: &GameState, depth: u8, mut alpha: i32, beta: i32) -> i32 {
         }
     }
 
-    let sorted_moves = sort_moves(&moves, state.board());
+    let sorted_moves = sort_moves(&moves, board, tt);
+
+    let mut best_score = i32::MIN + 1;
+    let mut best_move: Option<Move> = None;
 
     for m in sorted_moves {
-        let mut new_state = state.clone();
-        if new_state.make_move(m).is_err() {
-            continue;
+        let captured = board.make_move(m);
+        let score = -alpha_beta(board, depth - 1, -beta, -alpha, tt);
+        board.undo_move(m, captured);
+
+        if score > best_score {
+            best_score = score;
+            best_move = Some(m);
         }
-        let score = -alpha_beta(&new_state, depth - 1, -beta, -alpha);
+
         if score >= beta {
-            return beta; // Beta 剪枝
+            // Beta 剪枝
+            let flag = TTFlag::Lower;
+            tt.store(hash, depth, best_score, flag, best_move);
+            return best_score;
         }
         if score > alpha {
             alpha = score;
         }
     }
-    alpha
+
+    // 存入置换表
+    let flag = if best_score <= orig_alpha {
+        TTFlag::Upper // Failed low — score is upper bound
+    } else if best_score >= beta {
+        TTFlag::Lower // Beta cutoff — score is lower bound
+    } else {
+        TTFlag::Exact // PV node — score is exact
+    };
+    tt.store(hash, depth, best_score, flag, best_move);
+
+    best_score
 }
 
 /// 静态搜索 (Quiescence Search)
 /// 只搜索吃子走法，避免水平线效应
-fn quiescence_search(state: &GameState, alpha: i32, beta: i32, depth: u8) -> i32 {
+fn quiescence_search(board: &mut Board, alpha: i32, beta: i32, depth: u8) -> i32 {
     // 从当前走子方视角评估
-    let color = state.side_to_move();
+    let color = board.side_to_move();
     let sign = match color {
         Color::Red => 1,
         Color::Black => -1,
     };
-    let stand_pat = evaluate_fast(state.board()) * sign;
+    let stand_pat = evaluate_fast(board) * sign;
 
     if stand_pat >= beta {
         return beta;
@@ -107,14 +166,13 @@ fn quiescence_search(state: &GameState, alpha: i32, beta: i32, depth: u8) -> i32
     let mut alpha = if stand_pat > alpha { stand_pat } else { alpha };
 
     // 只搜索吃子走法
-    let captures = get_capture_moves(state);
+    let captures = get_capture_moves(board);
 
     for m in captures {
-        let mut new_state = state.clone();
-        if new_state.make_move(m).is_err() {
-            continue;
-        }
-        let score = -quiescence_search(&new_state, -beta, -alpha, depth - 1);
+        let captured = board.make_move(m);
+        let score = -quiescence_search(board, -beta, -alpha, depth - 1);
+        board.undo_move(m, captured);
+
         if score >= beta {
             return beta;
         }
@@ -126,10 +184,17 @@ fn quiescence_search(state: &GameState, alpha: i32, beta: i32, depth: u8) -> i32
     alpha
 }
 
-/// MVV-LVA 走法排序 (Most Valuable Victim - Least Valuable Attacker)
-fn sort_moves(moves: &[Move], board: &Board) -> Vec<Move> {
+/// MVV-LVA 走法排序 + TT 最佳走法优先
+fn sort_moves(moves: &[Move], board: &Board, tt: &TranspositionTable) -> Vec<Move> {
+    let hash = board.zobrist_hash();
+    let tt_best_move = tt.probe_for_move(hash).and_then(|e| e.best_move);
+
     let mut scored_moves: Vec<(i32, Move)> = moves.iter().map(|&m| {
-        let score = move_ordering_score(m, board);
+        let mut score = move_ordering_score(m, board);
+        // TT 最佳走法排最前
+        if tt_best_move == Some(m) {
+            score += 1_000_000;
+        }
         (score, m)
     }).collect();
     scored_moves.sort_by_key(|b| std::cmp::Reverse(b.0));
@@ -169,10 +234,10 @@ fn move_ordering_score(m: Move, board: &Board) -> i32 {
 }
 
 /// 获取吃子走法
-fn get_capture_moves(state: &GameState) -> Vec<Move> {
-    let color = state.side_to_move();
-    let moves = state.board().generate_legal_moves(color);
-    moves.into_iter().filter(|&m| state.board().piece_at(m.to).is_some()).collect()
+fn get_capture_moves(board: &Board) -> Vec<Move> {
+    let color = board.side_to_move();
+    let moves = board.generate_legal_moves(color);
+    moves.into_iter().filter(|&m| board.piece_at(m.to).is_some()).collect()
 }
 
 #[cfg(test)]
@@ -215,8 +280,6 @@ mod tests {
         assert!(result.is_some());
         // The best move should capture the rook
         let (_m, score) = result.unwrap();
-        // Red rook at e1 (4,8) can capture black rook at f0 (5,0)? Let me check...
-        // Actually, let's just verify the AI finds a move that produces a good score
         assert!(score > 0, "AI should find a positive score with material advantage, got {}", score);
     }
 
@@ -259,13 +322,7 @@ mod tests {
         // Position where black is checkmated (no legal moves)
         let fen = "k8/1R7/R8/9/9/9/9/9/9/7K1 b - - 0 1";
         let state = GameState::from_fen(fen).unwrap();
-        // Black is in checkmate, but we need to verify from the active side's perspective
-        // If black has no legal moves, the game should already be over
         let result = find_best_move(&state, 2);
-        // This position should be checkmate, so game_over should be true
-        // (if check_game_end was called during from_fen, but it's not —
-        // from_fen doesn't call check_game_end. So generate_legal_moves returns empty.)
-        // find_best_move checks generate_legal_moves and returns None if empty
         assert!(result.is_none(), "Should return None when no legal moves exist");
     }
 
@@ -276,7 +333,8 @@ mod tests {
         let state = GameState::from_fen(fen).unwrap();
         let moves = state.generate_legal_moves();
         let board = state.board();
-        let sorted = sort_moves(&moves, board);
+        let tt = TranspositionTable::default_size();
+        let sorted = sort_moves(&moves, board, &tt);
 
         // Find the capture move (rook captures knight at d1)
         let captures: Vec<bool> = sorted.iter().map(|&m| board.piece_at(m.to).is_some()).collect();
@@ -286,5 +344,46 @@ mod tests {
         if let (Some(first_nc), Some(lc)) = (first_non_capture, last_capture) {
             assert!(lc < first_nc, "All captures should come before non-captures");
         }
+    }
+
+    #[test]
+    fn test_make_unmake_preserves_board_state() {
+        // Verify that make_move + undo_move preserves the board state in search
+        let state = GameState::new();
+        let mut board = state.board().clone();
+        let fen_before = board.to_fen();
+
+        let moves = board.generate_legal_moves(Color::Red);
+        for m in moves {
+            let captured = board.make_move(m);
+            board.undo_move(m, captured);
+        }
+        assert_eq!(board.to_fen(), fen_before, "Board should be unchanged after make/undo cycle");
+    }
+
+    #[test]
+    fn test_search_finds_checkmate() {
+        // Position where Red can checkmate in 1
+        let fen = "k8/1R7/R8/9/9/9/9/9/9/7K1 w - - 0 1";
+        let state = GameState::from_fen(fen).unwrap();
+        let result = find_best_move(&state, 2);
+        assert!(result.is_some());
+        let (m, score) = result.unwrap();
+        // Should find the checkmate move with a very high score
+        assert!(score > 9000, "AI should find checkmate with high score, got {} for move {:?}", score, m);
+    }
+
+    #[test]
+    fn test_tt_improves_search_consistency() {
+        // Same position searched twice should give same result
+        let fen = "4k4/9/9/9/9/9/9/9/R7R/4K4 w - - 0 1";
+        let state1 = GameState::from_fen(fen).unwrap();
+        let state2 = GameState::from_fen(fen).unwrap();
+
+        let r1 = find_best_move(&state1, 3);
+        let r2 = find_best_move(&state2, 3);
+
+        assert_eq!(r1.map(|(m, s)| (m, s)), r2.map(|(m, s)| (m, s)),
+            "Same position should give same search result");
     }
 }
