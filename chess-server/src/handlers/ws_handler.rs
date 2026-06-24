@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::utils::auth::verify_token;
 use crate::utils::validation::{validate_game_id_string, validate_position_string, validate_token_string};
-use crate::websocket::message::{ClientMessage, ServerMessage};
+use crate::websocket::message::{ClientMessage, LobbyGameInfo, ServerMessage};
 use crate::AppState;
 
 /// GET /ws — WebSocket 升级
@@ -90,7 +90,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     // All game-action messages below are rate-limited per user
                     msg => {
                         if let Some((user_id, _, _)) = &authenticated_user {
-                            if !state.ws_rate_limit.check(&user_id.to_string()).await {
+                            if !state.ws_rate_limit.check(&user_id.to_string()) {
                                 tx.try_send(serde_json::to_string(&ServerMessage::Error {
                                     message: "Rate limited. Slow down.".into(),
                                 }).unwrap_or_default()).ok();
@@ -129,17 +129,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             match result {
                                                 Ok(move_result) => {
                                                     if move_result.is_game_over {
-                                                        let (result_str, reason_str) = match move_result.result.as_deref() {
-                                                            Some("red_win") => ("red_win", move_result.end_reason.as_deref().unwrap_or("checkmate")),
-                                                            Some("black_win") => ("black_win", move_result.end_reason.as_deref().unwrap_or("checkmate")),
-                                                            Some("draw") => ("draw", move_result.end_reason.as_deref().unwrap_or("draw")),
-                                                            _ => ("draw", "unknown"),
-                                                        };
-                                                        let moves_json = serde_json::to_string(&move_result.move_history).unwrap_or("[]".into());
-                                                        state.persist_game_end(gid, result_str, reason_str, &move_result.fen, &moves_json).await;
+                                                        let result_str = move_result.result.as_deref().unwrap_or("draw");
+                                                        let reason_str = move_result.end_reason.as_deref().unwrap_or("unknown");
+                                                        state.persist_game_end(gid, result_str, reason_str, &move_result.fen).await;
                                                     } else {
-                                                        let moves_json = serde_json::to_string(&move_result.move_history).unwrap_or("[]".into());
-                                                        if let Err(e) = state.game_repo.update_fen(gid, &move_result.fen, &moves_json).await {
+                                                        if let Err(e) = state.game_repo.update_fen(gid, &move_result.fen).await {
                                                             tracing::warn!("Failed to update FEN for game {}: {}", gid, e);
                                                         }
                                                     }
@@ -246,8 +240,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         if let Ok(room) = room
                                             && let Ok(Some((_, result_str, reason_str))) = room.leave(*user_id).await {
                                                 let fen = room.fen().await;
-                                                let moves_json = room.move_history_json().await;
-                                                state.persist_game_end(gid, &result_str, &reason_str, &fen, &moves_json).await;
+                                                state.persist_game_end(gid, &result_str, &reason_str, &fen).await;
                                             }
                                         current_game_ids.retain(|id| id != &gid);
                                     }
@@ -260,8 +253,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         if let Ok(room) = room
                                             && let Ok((_, result_str, reason_str)) = room.resign(*user_id).await {
                                                 let fen = room.fen().await;
-                                                let moves_json = room.move_history_json().await;
-                                                state.persist_game_end(gid, &result_str, &reason_str, &fen, &moves_json).await;
+                                                state.persist_game_end(gid, &result_str, &reason_str, &fen).await;
                                             }
                                     }
                             }
@@ -286,8 +278,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             match room.respond_draw(*user_id, accept).await {
                                                 Ok(Some((_, result_str, reason_str))) => {
                                                     let fen = room.fen().await;
-                                                    let moves_json = room.move_history_json().await;
-                                                    state.persist_game_end(gid, &result_str, &reason_str, &fen, &moves_json).await;
+                                                    state.persist_game_end(gid, &result_str, &reason_str, &fen).await;
                                                 }
                                                 Ok(None) => {
                                                     // Draw rejected — nothing to persist
@@ -299,6 +290,30 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             }
                                         }
                                     }
+                            }
+                            ClientMessage::SubscribeLobby => {
+                                if let Some((user_id, username, _)) = &authenticated_user {
+                                    let client = crate::websocket::client::Client::new(*user_id, username.clone(), tx.clone());
+                                    state.room_manager.subscribe_lobby(client).await;
+
+                                    // Send initial lobby state immediately
+                                    if let Ok(rows) = state.game_repo.list_with_players(None, 1, 100).await {
+                                        let games: Vec<LobbyGameInfo> = rows.into_iter().map(|(game, red_player, black_player)| {
+                                            LobbyGameInfo {
+                                                id: game.id.to_string(),
+                                                red_player,
+                                                black_player,
+                                                status: game.status,
+                                                time_control: game.time_control,
+                                                move_time_limit: game.move_time_limit,
+                                                byoyomi: game.byoyomi,
+                                                created_at: game.created_at.to_rfc3339(),
+                                            }
+                                        }).collect();
+                                        let msg = ServerMessage::LobbyUpdate { games };
+                                        tx.try_send(serde_json::to_string(&msg).unwrap_or_default()).ok();
+                                    }
+                                }
                             }
                             // Auth and Ping are handled above, not reachable here
                             _ => {}
@@ -316,6 +331,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // Grace period: player has 30 seconds to reconnect before game ends.
     // The timeout checker (in RoomManager) will end the game if the grace period expires.
     if let Some((user_id, _, _)) = &authenticated_user {
+        // Unsubscribe from lobby updates
+        state.room_manager.unsubscribe_lobby(*user_id).await;
+
         for gid in &current_game_ids {
             let room = state.room_manager.get_or_create_room(*gid).await;
             if let Ok(room) = room {
@@ -324,8 +342,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 // If result is Some, game ended immediately (spectator or already-over game)
                 if let Ok(Some((_, result_str, reason_str))) = result {
                     let fen = room.fen().await;
-                    let moves_json = room.move_history_json().await;
-                    state.persist_game_end(*gid, &result_str, &reason_str, &fen, &moves_json).await;
+                    state.persist_game_end(*gid, &result_str, &reason_str, &fen).await;
                 }
             }
         }

@@ -173,6 +173,10 @@ class WebSocketService {
     this.send({ type: 'respond_draw', game_id: gameId, accept });
   }
 
+  subscribeLobby() {
+    this.send({ type: 'subscribe_lobby' });
+  }
+
   onMessage(handler: MessageHandler): () => void {
     this.messageHandlers.add(handler);
     return () => this.messageHandlers.delete(handler);

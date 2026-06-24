@@ -199,9 +199,11 @@ pub async fn list_users(
     _auth: AuthUser,
     Query(q): Query<ListUsersQuery>,
     State(state): State<AppState>,
-) -> Result<Json<Vec<UserInfo>>, AppError> {
+) -> Result<Json<PaginatedResponse<UserInfo>>, AppError> {
     let page = q.page.unwrap_or(1).max(1);
     let page_size = q.page_size.unwrap_or(20).clamp(1, 100);
+    let total = state.user_repo.count().await?;
     let users = state.user_repo.list(page, page_size).await?;
-    Ok(Json(users.into_iter().map(UserInfo::from).collect()))
+    let items: Vec<UserInfo> = users.into_iter().map(UserInfo::from).collect();
+    Ok(Json(PaginatedResponse { items, total, page, page_size }))
 }

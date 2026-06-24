@@ -8,8 +8,28 @@ use crate::db::models::*;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
 use crate::services::game_service;
+use crate::websocket::message::LobbyGameInfo;
 use crate::websocket::room::MoveEntry;
 use crate::AppState;
+
+/// Build a lobby game list for broadcast to WS subscribers.
+async fn build_lobby_games(state: &AppState) -> Result<Vec<LobbyGameInfo>, AppError> {
+    let rows = state.game_repo.list_with_players(None, 1, 100).await?;
+    let games: Vec<LobbyGameInfo> = rows.into_iter().map(|(game, red_player, black_player)| {
+        LobbyGameInfo {
+            id: game.id.to_string(),
+            red_player,
+            black_player,
+            status: game.status,
+            time_control: game.time_control,
+            move_time_limit: game.move_time_limit,
+            byoyomi: game.byoyomi,
+            created_at: game.created_at.to_rfc3339(),
+        }
+    }).collect();
+    Ok(games)
+}
+
 /// POST /api/games — 创建对局
 pub async fn create_game(
     auth: AuthUser,
@@ -17,6 +37,12 @@ pub async fn create_game(
     Json(data): Json<CreateGameRequest>,
 ) -> Result<Json<CreateGameResponse>, AppError> {
     let (game, color) = game_service::create_game(&state.game_repo, auth.user_id, &data).await?;
+
+    // Notify lobby subscribers
+    if let Ok(games) = build_lobby_games(&state).await {
+        state.room_manager.broadcast_lobby_update(games).await;
+    }
+
     Ok(Json(CreateGameResponse {
         game_id: game.id,
         color,
@@ -34,6 +60,12 @@ pub async fn join_game(
         id,
         auth.user_id,
     ).await?;
+
+    // Notify lobby subscribers (game status changed from "waiting" to "playing")
+    if let Ok(games) = build_lobby_games(&state).await {
+        state.room_manager.broadcast_lobby_update(games).await;
+    }
+
     Ok(Json(game_info))
 }
 
@@ -74,12 +106,13 @@ pub struct ListGamesQuery {
 pub async fn list_games(
     Query(q): Query<ListGamesQuery>,
     State(state): State<AppState>,
-) -> Result<Json<Vec<GameInfo>>, AppError> {
-    let page = q.page.unwrap_or(1);
-    let page_size = q.page_size.unwrap_or(20).min(100);
+) -> Result<Json<PaginatedResponse<GameInfo>>, AppError> {
+    let page = q.page.unwrap_or(1).max(1);
+    let page_size = q.page_size.unwrap_or(20).clamp(1, 100);
+    let total = state.game_repo.count(q.status.as_deref()).await?;
     let rows = state.game_repo.list_with_players(q.status.as_deref(), page, page_size).await?;
 
-    let result: Vec<GameInfo> = rows.into_iter().map(|(game, red_player, black_player)| {
+    let items: Vec<GameInfo> = rows.into_iter().map(|(game, red_player, black_player)| {
         GameInfo {
             id: game.id,
             red_player,
@@ -97,7 +130,7 @@ pub async fn list_games(
             created_at: game.created_at,
         }
     }).collect();
-    Ok(Json(result))
+    Ok(Json(PaginatedResponse { items, total, page, page_size }))
 }
 
 /// DELETE /api/games/{id}
@@ -129,16 +162,14 @@ pub async fn rematch(
     }))
 }
 
-/// GET /api/games/{id}/moves — 返回结构化走法记录 (用于调试回溯)
+/// GET /api/games/{id}/moves — 返回结构化走法记录 (reconstructed from game_events)
 pub async fn get_game_moves(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<MoveEntry>>, AppError> {
-    let game = state.game_repo.find_by_id(id).await?
+    state.game_repo.find_by_id(id).await?
         .ok_or(AppError::NotFound("Game not found".into()))?;
-    let moves: Vec<MoveEntry> = game.move_history
-        .and_then(|h| serde_json::from_str(&h).ok())
-        .unwrap_or_default();
+    let moves = state.game_repo.get_move_history_from_events(id).await?;
     Ok(Json(moves))
 }
 

@@ -33,6 +33,7 @@ futures = "0.3"
 
 # 象棋引擎 (本地路径依赖)
 chess-engine = { path = "../chess-engine", features = ["serde"] }
+dashmap = "6"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }

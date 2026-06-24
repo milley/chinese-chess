@@ -22,20 +22,18 @@ pub async fn finish_game_with_elo(
     result_str: &str,
     reason_str: &str,
     fen: &str,
-    move_history: &str,
 ) -> Result<bool, AppError> {
     // Start a transaction for atomic game finish + Elo updates
     let mut tx = game_repo.pool().begin().await.map_err(|e| AppError::Internal(e.into()))?;
 
     // 更新对局结果 (idempotent: WHERE status != 'finished')
     let finished = sqlx::query_as::<_, Game>(
-        "UPDATE games SET status = 'finished', result = $1, end_reason = $2, fen = $3, move_history = $4, finished_at = NOW() \
-         WHERE id = $5 AND status != 'finished' RETURNING *"
+        "UPDATE games SET status = 'finished', result = $1, end_reason = $2, fen = $3, finished_at = NOW() \
+         WHERE id = $4 AND status != 'finished' RETURNING *"
     )
     .bind(result_str)
     .bind(reason_str)
     .bind(fen)
-    .bind(move_history)
     .bind(game_id)
     .fetch_optional(&mut *tx)
     .await.map_err(|e| AppError::Internal(e.into()))?;

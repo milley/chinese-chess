@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use crate::db::repositories::game_repo::GameRepository;
 use crate::db::repositories::user_repo::UserRepository;
-use crate::websocket::message::ServerMessage;
+use crate::websocket::client::Client;
+use crate::websocket::message::{LobbyGameInfo, ServerMessage};
 use crate::websocket::room::{GameRepo, GameRoom, MoveResult};
 
 /// Deduct elapsed downtime from player times after server restart.
@@ -50,6 +51,8 @@ pub struct RoomManager {
     game_repo: GameRepository,
     /// 用户仓库 (for Elo updates on timeout)
     user_repo: UserRepository,
+    /// Lobby WS subscribers — clients that want real-time lobby updates
+    lobby_subscribers: Arc<RwLock<Vec<Client>>>,
 }
 
 impl RoomManager {
@@ -58,6 +61,7 @@ impl RoomManager {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             game_repo,
             user_repo,
+            lobby_subscribers: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -164,6 +168,32 @@ impl RoomManager {
         rooms.remove(&game_id);
     }
 
+    // === Lobby subscription ===
+
+    /// Add a client to the lobby subscriber list for real-time updates.
+    pub async fn subscribe_lobby(&self, client: Client) {
+        let mut subs = self.lobby_subscribers.write().await;
+        // Remove any existing entry for the same user (reconnect)
+        subs.retain(|c| c.user_id != client.user_id);
+        subs.push(client);
+    }
+
+    /// Remove a client from lobby subscriptions (on disconnect).
+    pub async fn unsubscribe_lobby(&self, user_id: Uuid) {
+        let mut subs = self.lobby_subscribers.write().await;
+        subs.retain(|c| c.user_id != user_id);
+    }
+
+    /// Broadcast a lobby update to all subscribers.
+    /// Removes any subscribers whose channels are closed (disconnected clients).
+    pub async fn broadcast_lobby_update(&self, games: Vec<LobbyGameInfo>) {
+        let msg = ServerMessage::LobbyUpdate { games };
+        let json = serde_json::to_string(&msg).unwrap_or_default();
+
+        let mut subs = self.lobby_subscribers.write().await;
+        subs.retain(|c| c.send(&json));
+    }
+
     /// 启动超时检查器 (每秒 tick 一次)
     pub fn start_timeout_checker(&self) {
         let rooms = self.rooms.clone();
@@ -191,7 +221,6 @@ impl RoomManager {
                     if let Some((gid, result_str, reason_str)) = room.check_disconnect_timeout().await {
                         // Grace period expired — game ended by disconnect
                         let fen = room.fen().await;
-                        let moves_json = room.move_history_json().await;
                         let game = game_repo.find_by_id(gid).await.ok().flatten();
                         if let Some(ref game) = game {
                             let _ = crate::services::elo_service::finish_game_with_elo(
@@ -202,10 +231,9 @@ impl RoomManager {
                                 &result_str,
                                 &reason_str,
                                 &fen,
-                                &moves_json,
                             ).await;
                         } else {
-                            let _ = game_repo.finish_game(gid, &result_str, &reason_str, &fen, &moves_json).await;
+                            let _ = game_repo.finish_game(gid, &result_str, &reason_str, &fen).await;
                         }
                         room.persist_time().await;
                         finished_ids.push(game_id);
@@ -240,7 +268,6 @@ impl RoomManager {
 
                             // Use finish_game_with_elo for proper Elo rating updates
                             // (fixes bug where timeouts previously skipped Elo)
-                            let moves_json = room.move_history_json().await;
                             let game = game_repo.find_by_id(game_id).await.ok().flatten();
                             let was_first = if let Some(ref game) = game {
                                 crate::services::elo_service::finish_game_with_elo(
@@ -251,12 +278,11 @@ impl RoomManager {
                                     result_str,
                                     reason_str,
                                     &fen,
-                                    &moves_json,
                                 ).await.ok().unwrap_or(false)
                             } else {
                                 // Fallback: no game record found, just finish without Elo
                                 game_repo.finish_game(
-                                    game_id, result_str, reason_str, &fen, &moves_json
+                                    game_id, result_str, reason_str, &fen
                                 ).await.ok().flatten().is_some()
                             };
 
@@ -357,6 +383,7 @@ impl Clone for RoomManager {
             rooms: self.rooms.clone(),
             game_repo: self.game_repo.clone(),
             user_repo: self.user_repo.clone(),
+            lobby_subscribers: self.lobby_subscribers.clone(),
         }
     }
 }

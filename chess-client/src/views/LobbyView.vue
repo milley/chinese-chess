@@ -81,7 +81,8 @@ import { useRouter } from 'vue-router';
 import { useUserStore } from '../stores/user';
 import { useGameStore } from '../stores/game';
 import { api } from '../api';
-import type { Game } from '../types';
+import { wsService } from '../api/websocket';
+import type { Game, LobbyGameInfo } from '../types';
 
 const router = useRouter();
 const userStore = useUserStore();
@@ -95,15 +96,26 @@ const createTimeControl = ref<number | null>(null);
 const createMoveTimeLimit = ref<number | null>(null);
 const createByoyomi = ref<number | null>(null);
 
-// Auto-refresh interval (every 5 seconds)
-let refreshTimer: ReturnType<typeof setInterval> | null = null;
+// WS message handler cleanup function
+let unsubscribeWs: (() => void) | null = null;
 
 async function loadGames() {
   try {
     const status = filter.value === 'all' ? undefined : filter.value;
-    games.value = await api.listGames(status);
+    const res = await api.listGames(status);
+    games.value = res.items;
   } catch {
     // ignore
+  }
+}
+
+function handleLobbyUpdate(lobbyGames: LobbyGameInfo[]) {
+  // Apply client-side status filter
+  const status = filter.value;
+  if (status === 'all') {
+    games.value = lobbyGames as unknown as Game[];
+  } else {
+    games.value = lobbyGames.filter(g => g.status === status) as unknown as Game[];
   }
 }
 
@@ -148,13 +160,21 @@ function logout() {
 }
 
 onMounted(() => {
+  // Initial REST load as fallback
   loadGames();
-  refreshTimer = setInterval(loadGames, 5000);
+
+  // Subscribe to real-time lobby updates via WebSocket
+  unsubscribeWs = wsService.onMessage((msg) => {
+    if (msg.type === 'lobby_update') {
+      handleLobbyUpdate(msg.games);
+    }
+  });
+  wsService.subscribeLobby();
 });
 onUnmounted(() => {
-  if (refreshTimer) {
-    clearInterval(refreshTimer);
-    refreshTimer = null;
+  if (unsubscribeWs) {
+    unsubscribeWs();
+    unsubscribeWs = null;
   }
 });
 watch(filter, loadGames);

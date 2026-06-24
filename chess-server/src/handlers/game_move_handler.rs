@@ -45,18 +45,11 @@ pub async fn make_move(
 
     // 更新数据库
     if result.is_game_over {
-        let (result_str, reason_str) = match result.result.as_deref() {
-            Some("red_win") => ("red_win", result.end_reason.as_deref().unwrap_or("checkmate")),
-            Some("black_win") => ("black_win", result.end_reason.as_deref().unwrap_or("checkmate")),
-            Some("draw") => ("draw", result.end_reason.as_deref().unwrap_or("draw")),
-            _ => ("draw", "unknown"),
-        };
-        let moves_json = serde_json::to_string(&result.move_history).unwrap_or("[]".into());
-
-        state.persist_game_end(id, result_str, reason_str, &result.fen, &moves_json).await;
+        let result_str = result.result.as_deref().unwrap_or("draw");
+        let reason_str = result.end_reason.as_deref().unwrap_or("unknown");
+        state.persist_game_end(id, result_str, reason_str, &result.fen).await;
     } else {
-        let moves_json = serde_json::to_string(&result.move_history).unwrap_or("[]".into());
-        state.game_repo.update_fen(id, &result.fen, &moves_json).await?;
+        state.game_repo.update_fen(id, &result.fen).await?;
     }
 
     Ok(Json(MakeMoveResponse {

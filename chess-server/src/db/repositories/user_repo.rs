@@ -79,6 +79,14 @@ impl UserRepository {
         Ok(())
     }
 
+    /// Count total users.
+    pub async fn count(&self) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count)
+    }
+
     pub async fn list(&self, page: i64, page_size: i64) -> Result<Vec<User>> {
         let offset = (page - 1) * page_size;
         let users = sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2")

@@ -6,6 +6,7 @@ import type {
   User,
   UpdateUserRequest,
   Game,
+  PaginatedResponse,
   CreateGameRequest,
   CreateGameResponse,
   MakeMoveResponse,
@@ -107,8 +108,8 @@ class ApiService {
     return res.data;
   }
 
-  async listUsers(page?: number, pageSize?: number): Promise<User[]> {
-    const res = await this.client.get<User[]>('/api/users', {
+  async listUsers(page?: number, pageSize?: number): Promise<PaginatedResponse<User>> {
+    const res = await this.client.get<PaginatedResponse<User>>('/api/users', {
       params: { page, page_size: pageSize },
     });
     return res.data;
@@ -125,8 +126,8 @@ class ApiService {
     return res.data;
   }
 
-  async listGames(status?: string, page?: number, pageSize?: number): Promise<Game[]> {
-    const res = await this.client.get<Game[]>('/api/games', {
+  async listGames(status?: string, page?: number, pageSize?: number): Promise<PaginatedResponse<Game>> {
+    const res = await this.client.get<PaginatedResponse<Game>>('/api/games', {
       params: { status, page, page_size: pageSize },
     });
     return res.data;

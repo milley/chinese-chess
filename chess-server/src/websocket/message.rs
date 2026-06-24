@@ -21,6 +21,8 @@ pub enum ClientMessage {
     OfferDraw { game_id: String },
     #[serde(rename = "respond_draw")]
     RespondDraw { game_id: String, accept: bool },
+    #[serde(rename = "subscribe_lobby")]
+    SubscribeLobby,
     #[serde(rename = "ping")]
     Ping,
 }
@@ -94,10 +96,27 @@ pub enum ServerMessage {
     },
     #[serde(rename = "pong")]
     Pong,
+    #[serde(rename = "lobby_update")]
+    LobbyUpdate {
+        games: Vec<LobbyGameInfo>,
+    },
     #[serde(rename = "error")]
     Error {
         message: String,
     },
+}
+
+/// Lightweight game info for lobby updates (no FEN, no move_history).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LobbyGameInfo {
+    pub id: String,
+    pub red_player: Option<UserInfo>,
+    pub black_player: Option<UserInfo>,
+    pub status: String,
+    pub time_control: Option<i32>,
+    pub move_time_limit: Option<i32>,
+    pub byoyomi: Option<i32>,
+    pub created_at: String,
 }
 
 #[cfg(test)]

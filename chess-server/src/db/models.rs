@@ -40,7 +40,6 @@ pub struct Game {
     pub result: Option<String>,
     pub end_reason: Option<String>,
     pub fen: String,
-    pub move_history: Option<String>,
     pub initial_fen: Option<String>,
     pub time_control: Option<i32>,
     pub move_time_limit: Option<i32>,
@@ -107,7 +106,7 @@ pub struct LoginResponse {
     pub user: UserInfo,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserInfo {
     pub id: Uuid,
     pub username: String,
@@ -180,6 +179,15 @@ pub struct AiMoveResponse {
 pub struct RematchResponse {
     pub game_id: Uuid,
     pub color: String,
+}
+
+/// Paginated response wrapper with total count for frontend pagination.
+#[derive(Serialize)]
+pub struct PaginatedResponse<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
 }
 
 #[cfg(test)]

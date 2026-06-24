@@ -30,7 +30,8 @@ impl GameRepo for GameRepository {
 }
 
 /// A structured entry for each move in the game's move history.
-/// Stored as a JSON array in the `move_history` DB column, enabling
+/// Reconstructed from game_events (event_type = 'move') when needed via
+/// game_repo.get_move_history_from_events().
 /// full game replay and bug reproduction with per-move context.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MoveEntry {
@@ -377,7 +378,7 @@ impl GameRoom {
         };
         let entry = MoveEntry {
             mv: format!("{}-{}", from, to),
-            notation,
+            notation: notation.clone(),
             color: color_str.to_string(),
             fen: fen.clone(),
             is_check,
@@ -410,11 +411,13 @@ impl GameRoom {
         let ev_result = result.clone();
         let ev_end_reason = end_reason.clone();
         let ev_color_str = color_str.to_string();
+        let ev_notation = notation.clone();
         let ev_user_id = _user_id;
         tokio::spawn(async move {
             if let Err(e) = repo.append_event(game_id, "move".to_string(), Some(ev_user_id), serde_json::json!({
                 "from": ev_from, "to": ev_to, "fen": ev_fen,
                 "is_check": ev_is_check, "color": ev_color_str,
+                "notation": ev_notation,
                 "time_spent": ev_time_spent, "red_time": ev_red_time, "black_time": ev_black_time,
             })).await {
                 tracing::info!("Failed to append move event for game {}: {}", game_id, e);
@@ -1009,14 +1012,6 @@ impl GameRoom {
         self.time_control.read().await
     }
 
-    /// Serialize the in-memory move log to a JSON string.
-    /// Used by the timeout checker and other non-move game-end paths to preserve
-    /// existing move history when writing to the DB.
-    pub async fn move_history_json(&self) -> String {
-        let log = self.move_log.read().await;
-        serde_json::to_string(&*log).unwrap_or_else(|_| "[]".to_string())
-    }
-
     /// Get the current remaining time as (red_time, black_time) in i64.
     /// Returns (None, None) if no time control is configured.
     pub async fn remaining_time(&self) -> (Option<i64>, Option<i64>) {
@@ -1309,13 +1304,18 @@ mod tests {
         room.join(rc, chess_engine::Color::Red).await.unwrap();
 
         // Initially empty
-        assert_eq!(room.move_history_json().await, "[]");
+        {
+            let log = room.move_log.read().await;
+            assert!(log.is_empty());
+        }
 
         // Red cannon b9 → c7
         room.make_move(red_id, chess_engine::Color::Red, "b9", "c7").await.unwrap();
-        let json = room.move_history_json().await;
-        assert!(!json.contains("[]"), "Should have at least one entry");
-        assert!(json.contains("b9-c7"));
+        {
+            let log = room.move_log.read().await;
+            assert_eq!(log.len(), 1);
+            assert_eq!(log[0].mv, "b9-c7");
+        }
     }
 
     #[tokio::test]
@@ -1550,9 +1550,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_move_history_json_empty() {
+    async fn test_move_log_empty() {
         let (room, _) = create_test_room();
-        assert_eq!(room.move_history_json().await, "[]");
+        let log = room.move_log.read().await;
+        assert!(log.is_empty());
     }
 
     #[tokio::test]

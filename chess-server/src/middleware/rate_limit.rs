@@ -1,7 +1,5 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
@@ -9,7 +7,7 @@ use axum::extract::State;
 use axum::http::{Request, Response, StatusCode};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
-use tokio::sync::Mutex;
+use dashmap::DashMap;
 
 /// Configuration for the rate limiter.
 #[derive(Clone)]
@@ -21,10 +19,14 @@ pub struct RateLimitConfig {
 }
 
 /// Shared state for the rate limiter: maps client IP to request timestamps.
+///
+/// Uses `DashMap` (sharded concurrent HashMap) instead of `Mutex<HashMap>` to
+/// avoid serializing all rate limit checks. Each shard has its own lock, so
+/// concurrent access to different keys doesn't contend.
 #[derive(Clone)]
 pub struct RateLimitState {
     config: RateLimitConfig,
-    buckets: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+    buckets: DashMap<String, Vec<Instant>>,
     /// Optional trusted proxy header name (e.g., "x-real-ip" set by nginx).
     /// When set, only this header is trusted for IP extraction.
     /// When unset, uses the direct socket address via ConnectInfo.
@@ -38,7 +40,7 @@ impl RateLimitState {
                 max_requests,
                 window_secs,
             },
-            buckets: Arc::new(Mutex::new(HashMap::new())),
+            buckets: DashMap::new(),
             trusted_header: None,
         }
     }
@@ -50,21 +52,22 @@ impl RateLimitState {
                 max_requests,
                 window_secs,
             },
-            buckets: Arc::new(Mutex::new(HashMap::new())),
+            buckets: DashMap::new(),
             trusted_header: Some(trusted_header),
         }
     }
 
     /// Check if a request from the given key is allowed.
     /// Returns true if the request is within limits, false if rate limited.
-    pub async fn check(&self, key: &str) -> bool {
+    ///
+    /// This method is synchronous (no async Mutex). DashMap's `entry` API
+    /// acquires only the shard lock for the given key, not a global lock.
+    pub fn check(&self, key: &str) -> bool {
         let now = Instant::now();
-        let window_duration = std::time::Duration::from_secs(self.config.window_secs);
-        let cutoff = now - window_duration;
+        let cutoff = now - Duration::from_secs(self.config.window_secs);
 
-        let mut buckets = self.buckets.lock().await;
-
-        let timestamps = buckets.entry(key.to_string()).or_insert_with(Vec::new);
+        let mut entry = self.buckets.entry(key.to_string()).or_insert_with(Vec::new);
+        let timestamps = entry.value_mut();
 
         // Remove expired timestamps
         timestamps.retain(|t| *t > cutoff);
@@ -80,16 +83,14 @@ impl RateLimitState {
 
     /// Clean up expired entries to prevent unbounded memory growth.
     /// Called periodically (every 60 seconds) from the cleanup task.
+    ///
+    /// Kept `async` for call-site compatibility with the spawned cleanup task.
     pub async fn cleanup(&self) {
-        let window_duration = std::time::Duration::from_secs(self.config.window_secs);
-        let cutoff = Instant::now() - window_duration;
-
-        let mut buckets = self.buckets.lock().await;
-        for timestamps in buckets.values_mut() {
+        let cutoff = Instant::now() - Duration::from_secs(self.config.window_secs);
+        self.buckets.retain(|_, timestamps| {
             timestamps.retain(|t| *t > cutoff);
-        }
-        // Remove entries with no remaining timestamps
-        buckets.retain(|_, timestamps| !timestamps.is_empty());
+            !timestamps.is_empty()
+        });
     }
 }
 
@@ -134,7 +135,7 @@ pub async fn rate_limit_middleware(
 ) -> Response<Body> {
     let client_ip = extract_client_ip(&req, state.trusted_header.as_deref());
 
-    if state.check(&client_ip).await {
+    if state.check(&client_ip) {
         next.run(req).await
     } else {
         (StatusCode::TOO_MANY_REQUESTS, "Rate limited. Please try again later.").into_response()
@@ -145,42 +146,42 @@ pub async fn rate_limit_middleware(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_rate_limit_allows_within_limit() {
+    #[test]
+    fn test_rate_limit_allows_within_limit() {
         let state = RateLimitState::new(3, 60);
-        assert!(state.check("192.168.1.1").await);
-        assert!(state.check("192.168.1.1").await);
-        assert!(state.check("192.168.1.1").await);
+        assert!(state.check("192.168.1.1"));
+        assert!(state.check("192.168.1.1"));
+        assert!(state.check("192.168.1.1"));
     }
 
-    #[tokio::test]
-    async fn test_rate_limit_blocks_over_limit() {
+    #[test]
+    fn test_rate_limit_blocks_over_limit() {
         let state = RateLimitState::new(2, 60);
-        assert!(state.check("10.0.0.1").await);
-        assert!(state.check("10.0.0.1").await);
-        assert!(!state.check("10.0.0.1").await); // 3rd request blocked
+        assert!(state.check("10.0.0.1"));
+        assert!(state.check("10.0.0.1"));
+        assert!(!state.check("10.0.0.1")); // 3rd request blocked
     }
 
-    #[tokio::test]
-    async fn test_rate_limit_independent_per_ip() {
+    #[test]
+    fn test_rate_limit_independent_per_ip() {
         let state = RateLimitState::new(1, 60);
-        assert!(state.check("1.1.1.1").await);
-        assert!(state.check("2.2.2.2").await); // Different IP, separate bucket
-        assert!(!state.check("1.1.1.1").await); // Same IP, now blocked
+        assert!(state.check("1.1.1.1"));
+        assert!(state.check("2.2.2.2")); // Different IP, separate bucket
+        assert!(!state.check("1.1.1.1")); // Same IP, now blocked
     }
 
     #[tokio::test]
     async fn test_rate_limit_cleanup_removes_expired() {
         let state = RateLimitState::new(1, 1); // 1-second window
-        assert!(state.check("3.3.3.3").await);
-        assert!(!state.check("3.3.3.3").await); // Blocked within window
+        assert!(state.check("3.3.3.3"));
+        assert!(!state.check("3.3.3.3")); // Blocked within window
 
         // Wait for window to expire
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         state.cleanup().await;
 
         // Should be allowed again after cleanup
-        assert!(state.check("3.3.3.3").await);
+        assert!(state.check("3.3.3.3"));
     }
 
     #[test]

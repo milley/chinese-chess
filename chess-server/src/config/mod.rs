@@ -11,6 +11,9 @@ pub struct AppConfig {
     /// When set, only this header is trusted; X-Forwarded-For is ignored.
     /// When unset, uses the direct socket address via ConnectInfo.
     pub trusted_proxy_header: Option<String>,
+    /// Maximum number of database connections in the pool.
+    /// Defaults to 10. Configure via DATABASE_POOL_SIZE env var.
+    pub database_pool_size: u32,
     #[allow(dead_code)] // Used in tests; may be read by future config logic
     pub test_mode: bool,
 }
@@ -43,6 +46,9 @@ impl AppConfig {
             jwt_secret,
             cors_origins,
             trusted_proxy_header: env::var("TRUSTED_PROXY_HEADER").ok(),
+            database_pool_size: env::var("DATABASE_POOL_SIZE")
+                .unwrap_or("10".into())
+                .parse()?,
             test_mode,
         })
     }

@@ -3,6 +3,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::db::models::{Game, GameEvent, UserInfo};
+use crate::websocket::room::MoveEntry;
 
 const INITIAL_FEN: &str = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1";
 
@@ -83,24 +84,22 @@ impl GameRepository {
         }
     }
 
-    pub async fn finish_game(&self, id: Uuid, result: &str, end_reason: &str, fen: &str, move_history: &str) -> Result<Option<Game>> {
+    pub async fn finish_game(&self, id: Uuid, result: &str, end_reason: &str, fen: &str) -> Result<Option<Game>> {
         let game = sqlx::query_as::<_, Game>(
-            "UPDATE games SET status = 'finished', result = $1, end_reason = $2, fen = $3, move_history = $4, finished_at = NOW() WHERE id = $5 AND status != 'finished' RETURNING *"
+            "UPDATE games SET status = 'finished', result = $1, end_reason = $2, fen = $3, finished_at = NOW() WHERE id = $4 AND status != 'finished' RETURNING *"
         )
         .bind(result)
         .bind(end_reason)
         .bind(fen)
-        .bind(move_history)
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(game)
     }
 
-    pub async fn update_fen(&self, id: Uuid, fen: &str, move_history: &str) -> Result<()> {
-        sqlx::query("UPDATE games SET fen = $1, move_history = $2 WHERE id = $3")
+    pub async fn update_fen(&self, id: Uuid, fen: &str) -> Result<()> {
+        sqlx::query("UPDATE games SET fen = $1 WHERE id = $2")
             .bind(fen)
-            .bind(move_history)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -146,7 +145,7 @@ impl GameRepository {
         let rows = match status {
             Some(s) => sqlx::query(
                 "SELECT g.id, g.red_player_id, g.black_player_id, g.status, g.result, g.end_reason, \
-                 g.fen, g.move_history, g.initial_fen, g.time_control, g.move_time_limit, g.byoyomi, \
+                 g.fen, g.initial_fen, g.time_control, g.move_time_limit, g.byoyomi, \
                  g.red_time, g.black_time, g.created_at, g.started_at, g.finished_at, g.last_tick_at, \
                  ru.id as ru_id, ru.username as ru_username, ru.display_name as ru_display_name, \
                  ru.rating as ru_rating, ru.wins as ru_wins, ru.losses as ru_losses, ru.draws as ru_draws, \
@@ -166,7 +165,7 @@ impl GameRepository {
             .await?,
             None => sqlx::query(
                 "SELECT g.id, g.red_player_id, g.black_player_id, g.status, g.result, g.end_reason, \
-                 g.fen, g.move_history, g.initial_fen, g.time_control, g.move_time_limit, g.byoyomi, \
+                 g.fen, g.initial_fen, g.time_control, g.move_time_limit, g.byoyomi, \
                  g.red_time, g.black_time, g.created_at, g.started_at, g.finished_at, g.last_tick_at, \
                  ru.id as ru_id, ru.username as ru_username, ru.display_name as ru_display_name, \
                  ru.rating as ru_rating, ru.wins as ru_wins, ru.losses as ru_losses, ru.draws as ru_draws, \
@@ -214,6 +213,20 @@ impl GameRepository {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Count total games, optionally filtered by status.
+    pub async fn count(&self, status: Option<&str>) -> Result<i64> {
+        let count: i64 = match status {
+            Some(s) => sqlx::query_scalar("SELECT COUNT(*) FROM games WHERE status = $1")
+                .bind(s)
+                .fetch_one(&self.pool)
+                .await?,
+            None => sqlx::query_scalar("SELECT COUNT(*) FROM games")
+                .fetch_one(&self.pool)
+                .await?,
+        };
+        Ok(count)
     }
 
     pub async fn append_event(&self, game_id: Uuid, event_type: &str, actor_id: Option<Uuid>, data: serde_json::Value) -> Result<GameEvent> {
@@ -270,6 +283,30 @@ impl GameRepository {
         Ok(events)
     }
 
+    /// Reconstruct move history from game_events (replaces the removed move_history column).
+    /// Filters "move" events and maps their JSON data to MoveEntry structs.
+    pub async fn get_move_history_from_events(&self, game_id: Uuid) -> Result<Vec<MoveEntry>> {
+        let events = self.list_events(game_id).await?;
+        let moves: Vec<MoveEntry> = events.iter()
+            .filter(|e| e.event_type == "move")
+            .filter_map(|e| {
+                let d = &e.data;
+                Some(MoveEntry {
+                    mv: format!("{}-{}", d.get("from")?.as_str()?, d.get("to")?.as_str()?),
+                    notation: d.get("notation").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    color: d.get("color")?.as_str()?.to_string(),
+                    fen: d.get("fen")?.as_str()?.to_string(),
+                    is_check: d.get("is_check").and_then(|v| v.as_bool()).unwrap_or(false),
+                    time_spent: d.get("time_spent").and_then(|v| v.as_i64()).map(|v| v as i32),
+                    red_time: d.get("red_time").and_then(|v| v.as_i64()).map(|v| v as i32),
+                    black_time: d.get("black_time").and_then(|v| v.as_i64()).map(|v| v as i32),
+                    timestamp: e.created_at.to_rfc3339(),
+                })
+            })
+            .collect();
+        Ok(moves)
+    }
+
     /// Update the last_tick_at timestamp for a game.
     /// Called by the timeout checker every tick to record when time was last processed.
     /// On server restart, this timestamp is used to deduct elapsed downtime.
@@ -295,7 +332,6 @@ fn row_to_game_with_players(row: &sqlx::postgres::PgRow) -> (Game, Option<UserIn
         result: row.get("result"),
         end_reason: row.get("end_reason"),
         fen: row.get("fen"),
-        move_history: row.get("move_history"),
         initial_fen: row.get("initial_fen"),
         time_control: row.get("time_control"),
         move_time_limit: row.get("move_time_limit"),

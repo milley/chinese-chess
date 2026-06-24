@@ -30,6 +30,8 @@ pub struct AppState {
     pub jwt_secret: String,
     /// Per-user rate limiter for WS game-action messages (30 msgs/10s)
     pub ws_rate_limit: RateLimitState,
+    /// Database connection pool for health checks and direct queries
+    pub pool: sqlx::PgPool,
 }
 
 impl AppState {
@@ -47,7 +49,6 @@ impl AppState {
         result_str: &str,
         reason_str: &str,
         fen: &str,
-        move_history: &str,
     ) {
         let game = match self.game_repo.find_by_id(game_id).await {
             Ok(Some(g)) => g,
@@ -69,7 +70,6 @@ impl AppState {
             result_str,
             reason_str,
             fen,
-            move_history,
         ).await {
             tracing::error!("persist_game_end: failed to finish game {} with Elo: {}", game_id, e);
         }
@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. 连接数据库
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(config.database_pool_size)
         .connect(&config.database_url)
         .await?;
 
@@ -117,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         room_manager,
         jwt_secret: config.jwt_secret.clone(),
         ws_rate_limit,
+        pool: pool.clone(),
     };
 
     // 7. 构建 CORS 层
@@ -195,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
         ));
 
     let app = Router::new()
-        .route("/health", get(|| async { "OK" }))
+        .route("/health", get(handlers::health_handler::health_check))
         .merge(auth_routes)
         .merge(action_routes)
         .merge(general_routes)

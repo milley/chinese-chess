@@ -9,6 +9,14 @@ export interface User {
   draws: number;
 }
 
+// Paginated response wrapper
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface LoginRequest {
   username: string;
   password: string;
@@ -137,6 +145,26 @@ export interface WsPingMessage {
   type: 'ping';
 }
 
+export interface WsSubscribeLobbyMessage {
+  type: 'subscribe_lobby';
+}
+
+export interface LobbyGameInfo {
+  id: string;
+  red_player: User | null;
+  black_player: User | null;
+  status: GameStatus;
+  time_control: number | null;
+  move_time_limit: number | null;
+  byoyomi: number | null;
+  created_at: string;
+}
+
+export interface WsLobbyUpdateMessage {
+  type: 'lobby_update';
+  games: LobbyGameInfo[];
+}
+
 export type WsClientMessage =
   | WsAuthMessage
   | WsJoinGameMessage
@@ -145,6 +173,7 @@ export type WsClientMessage =
   | WsResignMessage
   | WsOfferDrawMessage
   | WsRespondDrawMessage
+  | WsSubscribeLobbyMessage
   | WsPingMessage;
 
 export interface WsJoinedGameMessage {
@@ -239,6 +268,7 @@ export type WsServerMessage =
   | WsDrawOfferedMessage
   | WsDrawResponseMessage
   | WsTimeUpdateMessage
+  | WsLobbyUpdateMessage
   | WsPongMessage
   | WsErrorMessage;
 
