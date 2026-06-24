@@ -37,16 +37,32 @@ pub async fn join_game(
     game_id: Uuid,
     joining_user_id: Uuid,
 ) -> Result<GameInfo, AppError> {
-    let (game, _red_player, _black_player) = game_repo.find_with_players(game_id).await?
+    let (game, red_player, black_player) = game_repo.find_with_players(game_id).await?
         .ok_or(AppError::NotFound("Game not found".into()))?;
+
+    // If user is already in this game, return current state (idempotent).
+    // This handles double-clicks, page refresh, and reconnect scenarios.
+    if game.red_player_id == Some(joining_user_id) || game.black_player_id == Some(joining_user_id) {
+        return Ok(GameInfo {
+            id: game.id,
+            red_player,
+            black_player,
+            status: game.status,
+            result: game.result,
+            end_reason: game.end_reason,
+            fen: game.fen,
+            initial_fen: game.initial_fen,
+            time_control: game.time_control,
+            move_time_limit: game.move_time_limit,
+            byoyomi: game.byoyomi,
+            red_time: game.red_time,
+            black_time: game.black_time,
+            created_at: game.created_at,
+        });
+    }
 
     if game.status != "waiting" {
         return Err(AppError::BadRequest("Game is not waiting for players".into()));
-    }
-
-    // Check if user is already in this game
-    if game.red_player_id == Some(joining_user_id) || game.black_player_id == Some(joining_user_id) {
-        return Err(AppError::BadRequest("You are already in this game".into()));
     }
 
     // Check if both slots are filled

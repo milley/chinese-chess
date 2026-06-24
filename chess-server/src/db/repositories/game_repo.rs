@@ -190,7 +190,7 @@ impl GameRepository {
     pub async fn find_with_players(&self, id: Uuid) -> Result<Option<(Game, Option<UserInfo>, Option<UserInfo>)>> {
         let row = sqlx::query(
             "SELECT g.id, g.red_player_id, g.black_player_id, g.status, g.result, g.end_reason, \
-             g.fen, g.move_history, g.initial_fen, g.time_control, g.move_time_limit, g.byoyomi, \
+             g.fen, g.initial_fen, g.time_control, g.move_time_limit, g.byoyomi, \
              g.red_time, g.black_time, g.created_at, g.started_at, g.finished_at, g.last_tick_at, \
              ru.id as ru_id, ru.username as ru_username, ru.display_name as ru_display_name, \
              ru.rating as ru_rating, ru.wins as ru_wins, ru.losses as ru_losses, ru.draws as ru_draws, \

@@ -35,7 +35,8 @@
             <span v-if="game.byoyomi" style="margin-left: 4px; font-size: 12px; color: #666;">+{{ game.byoyomi }}秒读秒</span>
           </div>
           <div>
-            <button v-if="game.status === 'waiting'" class="btn btn-primary" @click="joinGame(game.id)">加入</button>
+            <button v-if="game.status === 'waiting' && !isPlayerInGame(game)" class="btn btn-primary" @click="joinGame(game.id)">加入</button>
+            <button v-if="game.status === 'waiting' && isPlayerInGame(game)" class="btn btn-secondary" @click="router.push(`/game/${game.id}`)">进入对局</button>
             <button v-if="game.status === 'playing'" class="btn btn-secondary" @click="watchGame(game.id)">观战</button>
             <button v-if="game.status === 'finished'" class="btn btn-secondary" @click="router.push(`/replay/${game.id}`)">回放</button>
           </div>
@@ -157,6 +158,12 @@ async function handleCreate() {
 function logout() {
   userStore.logout();
   router.push('/login');
+}
+
+function isPlayerInGame(game: Game): boolean {
+  const userId = userStore.user?.id;
+  if (!userId) return false;
+  return game.red_player?.id === userId || game.black_player?.id === userId;
 }
 
 onMounted(() => {

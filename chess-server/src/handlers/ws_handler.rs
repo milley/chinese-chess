@@ -163,10 +163,22 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         }
                                         let room = state.room_manager.get_or_create_room(gid).await;
                                         if let Ok(room) = room {
-                                            // Determine color from room's stored player IDs (no extra DB query)
-                                            let color = match room.player_color_from_db(*user_id) {
+                                            // Determine color from room's stored player IDs.
+                                            // If the room was created before the opponent joined
+                                            // via REST, the IDs may be stale — refresh from DB.
+                                            let color = match room.player_color_from_db(*user_id).await {
                                                 Ok(c) => c,
-                                                Err(_) => continue, // Not a player in this game
+                                                Err(_) => {
+                                                    // Room was cached before this player joined via REST.
+                                                    // Refresh player IDs from DB and retry.
+                                                    if let Ok(Some(game)) = state.game_repo.find_by_id(gid).await {
+                                                        room.refresh_player_ids(game.red_player_id, game.black_player_id).await;
+                                                    }
+                                                    match room.player_color_from_db(*user_id).await {
+                                                        Ok(c) => c,
+                                                        Err(_) => continue, // Not a player in this game
+                                                    }
+                                                }
                                             };
                                             let client = crate::websocket::client::Client::new(*user_id, username.clone(), tx.clone());
                                             let both_present = room.join(client, color).await.ok().unwrap_or(false);

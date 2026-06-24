@@ -101,10 +101,12 @@ pub struct GameRoom {
     move_log: Arc<RwLock<Vec<MoveEntry>>>,
     /// 数据库仓库 (trait object for testability)
     game_repo: Arc<dyn GameRepo>,
-    /// Red player's user ID (from DB game record, persists across disconnect/reconnect)
-    red_player_id: Option<Uuid>,
-    /// Black player's user ID (from DB game record, persists across disconnect/reconnect)
-    black_player_id: Option<Uuid>,
+    /// Red player's user ID (from DB game record, persists across disconnect/reconnect).
+    /// Wrapped in RwLock so it can be refreshed when a new player joins via REST
+    /// after the room was already cached.
+    red_player_id: Arc<RwLock<Option<Uuid>>>,
+    /// Black player's user ID (from DB game record, persists across disconnect/reconnect).
+    black_player_id: Arc<RwLock<Option<Uuid>>>,
     /// Disconnected player info with grace period deadline.
     /// Set when a player disconnects; cleared on reconnect or timeout forfeit.
     disconnected: Arc<RwLock<Option<DisconnectInfo>>>,
@@ -189,8 +191,8 @@ impl GameRoom {
             draw_offer: Arc::new(RwLock::new(None)),
             move_log: Arc::new(RwLock::new(Vec::new())),
             game_repo,
-            red_player_id,
-            black_player_id,
+            red_player_id: Arc::new(RwLock::new(red_player_id)),
+            black_player_id: Arc::new(RwLock::new(black_player_id)),
             disconnected: Arc::new(RwLock::new(None)),
             time_paused: Arc::new(RwLock::new(false)),
         }
@@ -198,21 +200,39 @@ impl GameRoom {
 
     /// Determine player color from the DB-stored player IDs.
     /// Works even when the player is disconnected (unlike `player_color` which checks live slots).
-    pub fn player_color_from_db(&self, user_id: Uuid) -> Result<chess_engine::Color, String> {
-        if self.red_player_id == Some(user_id) {
+    pub async fn player_color_from_db(&self, user_id: Uuid) -> Result<chess_engine::Color, String> {
+        let red_id = self.red_player_id.read().await;
+        let black_id = self.black_player_id.read().await;
+        if *red_id == Some(user_id) {
             Ok(chess_engine::Color::Red)
-        } else if self.black_player_id == Some(user_id) {
+        } else if *black_id == Some(user_id) {
             Ok(chess_engine::Color::Black)
         } else {
             Err("You are not a player in this game".into())
         }
     }
 
+    /// Refresh the DB-stored player IDs from the database.
+    /// Called when a player joins via REST after the room was already cached,
+    /// so the room's player IDs may be stale (e.g., black_player_id was None
+    /// when the room was created, but is now set in the DB).
+    pub async fn refresh_player_ids(&self, red_id: Option<Uuid>, black_id: Option<Uuid>) {
+        let mut r = self.red_player_id.write().await;
+        let mut b = self.black_player_id.write().await;
+        // Only update if the new value is Some (a player joined) and the old was None
+        if r.is_none() && red_id.is_some() {
+            *r = red_id;
+        }
+        if b.is_none() && black_id.is_some() {
+            *b = black_id;
+        }
+    }
+
     /// Get the opponent's user ID for a given color from the DB-stored player IDs.
     pub async fn opponent_player_id(&self, color: chess_engine::Color) -> Option<Uuid> {
         match color {
-            chess_engine::Color::Red => self.black_player_id,
-            chess_engine::Color::Black => self.red_player_id,
+            chess_engine::Color::Red => *self.black_player_id.read().await,
+            chess_engine::Color::Black => *self.red_player_id.read().await,
         }
     }
 
@@ -707,7 +727,7 @@ impl GameRoom {
     /// disconnect loss. If the game is already over, just remove the player.
     pub async fn handle_disconnect(&self, user_id: Uuid) -> Result<Option<(String, String, String)>, String> {
         // Check if this user is actually a player (not a spectator)
-        let color_result = self.player_color_from_db(user_id);
+        let color_result = self.player_color_from_db(user_id).await;
 
         // Always remove the player from the room (clears the live Client slot)
         self.remove_player(user_id).await;
