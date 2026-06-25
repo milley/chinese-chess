@@ -247,24 +247,10 @@ impl GameRoom {
             chess_engine::Color::Black => "black",
         };
         let user_id = client.user_id;
-        match color {
-            chess_engine::Color::Red => {
-                let mut player = self.red_player.write().await;
-                if player.is_some() {
-                    return Err("Red player slot is already occupied".into());
-                }
-                *player = Some(client);
-            }
-            chess_engine::Color::Black => {
-                let mut player = self.black_player.write().await;
-                if player.is_some() {
-                    return Err("Black player slot is already occupied".into());
-                }
-                *player = Some(client);
-            }
-        }
 
-        // Cancel disconnect grace period if this is a reconnect
+        // Cancel disconnect grace period if this is a reconnect.
+        // Do this BEFORE the slot check so the grace period is always cancelled
+        // even if the slot is still occupied (e.g., race between old and new WS tasks).
         {
             let mut disc = self.disconnected.write().await;
             if let Some(ref info) = *disc {
@@ -272,6 +258,37 @@ impl GameRoom {
                     *disc = None;
                     // Unpause time control
                     *self.time_paused.write().await = false;
+                    tracing::info!("Player {} reconnected to game {} — grace period cancelled",
+                        user_id, self.game_id);
+                }
+            }
+        }
+
+        match color {
+            chess_engine::Color::Red => {
+                let mut player = self.red_player.write().await;
+                if let Some(existing) = player.as_ref() {
+                    if existing.user_id == user_id {
+                        // Same user reconnecting — replace the old client
+                        *player = Some(client);
+                    } else {
+                        return Err("Red player slot is already occupied".into());
+                    }
+                } else {
+                    *player = Some(client);
+                }
+            }
+            chess_engine::Color::Black => {
+                let mut player = self.black_player.write().await;
+                if let Some(existing) = player.as_ref() {
+                    if existing.user_id == user_id {
+                        // Same user reconnecting — replace the old client
+                        *player = Some(client);
+                    } else {
+                        return Err("Black player slot is already occupied".into());
+                    }
+                } else {
+                    *player = Some(client);
                 }
             }
         }
@@ -847,6 +864,13 @@ impl GameRoom {
     /// Check if a player is currently in the disconnect grace period.
     pub async fn is_player_disconnected(&self) -> bool {
         self.disconnected.read().await.is_some()
+    }
+
+    /// Check if a specific user is currently in the disconnect grace period.
+    /// Unlike `is_player_disconnected()` which checks if ANYONE is disconnected,
+    /// this checks if THIS specific user is the one who disconnected.
+    pub async fn is_user_disconnected(&self, user_id: Uuid) -> bool {
+        self.disconnected.read().await.as_ref().map_or(false, |info| info.user_id == user_id)
     }
 
     /// 获取玩家颜色
@@ -1610,5 +1634,364 @@ mod tests {
         // Only black (opponent of red) should receive
         assert!(rx_red.try_recv().is_err(), "Red should not receive message sent to opponent of red");
         assert!(rx_black.try_recv().is_ok(), "Black should receive message");
+    }
+
+    // ============================================================
+    // Reconnect and grace-period cancellation tests
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_join_same_user_reconnect_replaces_client() {
+        // When the same user reconnects (slot already occupied by their old client),
+        // join should succeed by replacing the old client instead of returning error.
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        // Red joins initially
+        let (rc1, _old_rx) = make_client(red_id, "red");
+        room.join(rc1, chess_engine::Color::Red).await.unwrap();
+
+        // Black joins initially
+        let (bc, _bx) = make_client(black_id, "black");
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        // Red "reconnects" — same user_id, new client
+        let (rc2, mut new_rx) = make_client(red_id, "red_v2");
+        let result = room.join(rc2, chess_engine::Color::Red).await;
+        assert!(result.is_ok(), "Same-user reconnect should succeed, got {:?}", result);
+        assert!(result.unwrap(), "both_present should be true after reconnect");
+
+        // The new client should be able to receive messages
+        let msg = ServerMessage::Pong;
+        room.broadcast_to_opponent(chess_engine::Color::Black, &msg).await;
+        assert!(new_rx.try_recv().is_ok(), "Reconnected red client should receive messages");
+    }
+
+    #[tokio::test]
+    async fn test_join_different_user_slot_occupied_still_errors() {
+        // When a DIFFERENT user tries to join an occupied slot, it should still error.
+        let (room, _) = create_test_room();
+        let red_id1 = Uuid::new_v4();
+        let red_id2 = Uuid::new_v4();
+        let (c1, _) = make_client(red_id1, "red1");
+        let (c2, _) = make_client(red_id2, "red2");
+        room.join(c1, chess_engine::Color::Red).await.unwrap();
+        let result = room.join(c2, chess_engine::Color::Red).await;
+        assert!(result.is_err(), "Different user should not replace existing player");
+    }
+
+    #[tokio::test]
+    async fn test_grace_period_cancelled_on_reconnect_even_with_slot_occupied() {
+        // Simulate the race condition: old ws_handler hasn't called remove_player yet,
+        // so the slot is still occupied when the reconnecting player sends join_game.
+        // The grace period should still be cancelled.
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        // Both players join
+        let (rc, _) = make_client(red_id, "red");
+        let (bc, _) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        // Black disconnects — but simulate the race where remove_player has NOT run yet.
+        // We manually set the grace period without removing the player.
+        {
+            let mut disc = room.disconnected.write().await;
+            *disc = Some(DisconnectInfo {
+                color: chess_engine::Color::Black,
+                user_id: black_id,
+                deadline: tokio::time::Instant::now() + Duration::from_secs(30),
+            });
+            *room.time_paused.write().await = true;
+        }
+        assert!(room.is_player_disconnected().await, "Grace period should be active");
+
+        // Black reconnects — slot is still occupied (simulating race condition)
+        let (bc2, _) = make_client(black_id, "black_v2");
+        let result = room.join(bc2, chess_engine::Color::Black).await;
+        assert!(result.is_ok(), "Reconnect should succeed despite occupied slot");
+
+        // Grace period should be cancelled
+        assert!(!room.is_player_disconnected().await, "Grace period should be cancelled after reconnect");
+        assert!(!*room.time_paused.read().await, "Time should be unpaused after reconnect");
+    }
+
+    #[tokio::test]
+    async fn test_grace_period_cancelled_on_normal_disconnect_then_reconnect() {
+        // Normal flow: disconnect (removes player) → reconnect (slot empty).
+        // Grace period should still be cancelled.
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        let (rc, _) = make_client(red_id, "red");
+        let (bc, _) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        // Black disconnects normally (remove_player + grace period)
+        room.handle_disconnect(black_id).await.unwrap();
+        assert!(room.is_player_disconnected().await, "Grace period should be active after disconnect");
+        assert!(!room.has_player(black_id).await, "Black player should be removed from room");
+
+        // Black reconnects — slot is now empty
+        let (bc2, _) = make_client(black_id, "black_v2");
+        let result = room.join(bc2, chess_engine::Color::Black).await;
+        assert!(result.is_ok(), "Reconnect should succeed");
+        assert!(result.unwrap(), "both_present should be true after reconnect");
+
+        // Grace period should be cancelled
+        assert!(!room.is_player_disconnected().await, "Grace period should be cancelled after reconnect");
+        assert!(room.has_player(black_id).await, "Black player should be back in room");
+    }
+
+    #[tokio::test]
+    async fn test_grace_period_not_cancelled_for_wrong_user_reconnect() {
+        // If a different player reconnects, the grace period should NOT be cancelled.
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        let (rc, _) = make_client(red_id, "red");
+        let (bc, _) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        // Black disconnects
+        room.handle_disconnect(black_id).await.unwrap();
+        assert!(room.is_player_disconnected().await);
+
+        // Red "reconnects" (different color) — should NOT cancel Black's grace period
+        let (rc2, _) = make_client(red_id, "red_v2");
+        room.join(rc2, chess_engine::Color::Red).await.unwrap();
+
+        // Grace period should still be active
+        assert!(room.is_player_disconnected().await, "Grace period should NOT be cancelled for different player");
+    }
+
+    #[tokio::test]
+    async fn test_refresh_player_ids_updates_stale_ids() {
+        // Simulate: room was created before opponent joined REST.
+        // red_player_id is set but black_player_id is None (stale).
+        // After refresh, black_player_id should be updated.
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        // Manually clear black_player_id to simulate stale state
+        *room.black_player_id.write().await = None;
+
+        // player_color_from_db should fail for black
+        let result = room.player_color_from_db(black_id).await;
+        assert!(result.is_err(), "Should fail with stale black_player_id");
+
+        // Refresh from "DB" (simulating the DB now has black_player_id set)
+        room.refresh_player_ids(None, Some(black_id)).await;
+
+        // Now player_color_from_db should work for black
+        let result = room.player_color_from_db(black_id).await;
+        assert!(result.is_ok(), "Should succeed after refresh");
+        assert_eq!(result.unwrap(), chess_engine::Color::Black);
+
+        // Red should still work
+        let result = room.player_color_from_db(red_id).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), chess_engine::Color::Red);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_player_ids_does_not_overwrite_existing() {
+        // refresh_player_ids should only update None → Some, not overwrite existing IDs.
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let other_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        // Try to overwrite red_player_id with a different ID — should be ignored
+        room.refresh_player_ids(Some(other_id), None).await;
+
+        let result = room.player_color_from_db(red_id).await;
+        assert_eq!(result.unwrap(), chess_engine::Color::Red, "Red ID should not be overwritten");
+
+        let result = room.player_color_from_db(other_id).await;
+        assert!(result.is_err(), "Other ID should not be accepted");
+    }
+
+    #[tokio::test]
+    async fn test_opponent_player_id_after_refresh() {
+        // After refreshing player IDs, opponent_player_id should return the correct IDs.
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        // Simulate stale state: black_player_id is None
+        *room.black_player_id.write().await = None;
+
+        // Before refresh: opponent of red is None
+        let opp = room.opponent_player_id(chess_engine::Color::Red).await;
+        assert!(opp.is_none(), "Opponent should be None with stale IDs");
+
+        // After refresh
+        room.refresh_player_ids(None, Some(black_id)).await;
+        let opp = room.opponent_player_id(chess_engine::Color::Red).await;
+        assert_eq!(opp, Some(black_id), "Opponent should be black_id after refresh");
+    }
+
+    #[tokio::test]
+    async fn test_full_two_player_join_flow() {
+        // Simulate the full flow: creator joins → opponent joins via REST →
+        // opponent joins via WS (with stale room IDs that need refresh).
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        // Simulate stale room: black_player_id not yet known
+        *room.black_player_id.write().await = None;
+
+        // Step 1: Red (creator) joins via WS
+        let (rc, mut rx_red) = make_client(red_id, "red");
+        let color = room.player_color_from_db(red_id).await.unwrap();
+        assert_eq!(color, chess_engine::Color::Red);
+        let both = room.join(rc, color).await.unwrap();
+        assert!(!both, "Only one player — both_present should be false");
+
+        // Step 2: Black joins REST (DB updated). Simulate refresh:
+        room.refresh_player_ids(None, Some(black_id)).await;
+
+        // Step 3: Black joins via WS
+        let color = room.player_color_from_db(black_id).await.unwrap();
+        assert_eq!(color, chess_engine::Color::Black);
+
+        let (bc, _rx_black) = make_client(black_id, "black");
+        let both = room.join(bc, color).await.unwrap();
+        assert!(both, "Both players present — both_present should be true");
+
+        // Red should receive OpponentJoined via broadcast_to_opponent
+        let msg = ServerMessage::OpponentJoined {
+            game_id: room.game_id().to_string(),
+            opponent: crate::db::models::UserInfo {
+                id: black_id,
+                username: "black".to_string(),
+                display_name: None,
+                rating: 1500,
+                wins: 0,
+                losses: 0,
+                draws: 0,
+            },
+            fen: room.fen().await,
+        };
+        room.broadcast_to_opponent(chess_engine::Color::Black, &msg).await;
+
+        // Verify red received the message
+        let received = rx_red.try_recv();
+        assert!(received.is_ok(), "Red should receive opponent_joined message");
+        let parsed: serde_json::Value = serde_json::from_str(&received.unwrap()).unwrap();
+        assert_eq!(parsed["type"], "opponent_joined");
+    }
+
+    #[tokio::test]
+    async fn test_is_user_disconnected_checks_specific_user() {
+        // is_user_disconnected should only return true for the user who actually
+        // disconnected, not for any other player.
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        // Both players join
+        let (rc, _) = make_client(red_id, "red");
+        let (bc, _) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        // Red disconnects
+        room.handle_disconnect(red_id).await.unwrap();
+
+        // Only red should be "user disconnected", not black
+        assert!(room.is_user_disconnected(red_id).await, "Red should be marked as user disconnected");
+        assert!(!room.is_user_disconnected(black_id).await, "Black should NOT be marked as user disconnected");
+
+        // The generic check should return true (someone is disconnected)
+        assert!(room.is_player_disconnected().await, "Someone should be disconnected");
+    }
+
+    #[tokio::test]
+    async fn test_was_disconnected_does_not_false_positive_on_opponent_disconnect() {
+        // Simulates the bug scenario: Red disconnects, then Black joins for the
+        // first time. Black should NOT be treated as a reconnect.
+        // (This test verifies the logic that was previously using
+        //  is_player_disconnected() which checks ANY disconnect.)
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        // Red joins and then disconnects
+        let (rc, _) = make_client(red_id, "red");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.handle_disconnect(red_id).await.unwrap();
+
+        // Simulate stale black_player_id (room created before Black joined REST)
+        *room.black_player_id.write().await = None;
+
+        // Now Black joins REST (simulated by refreshing IDs)
+        room.refresh_player_ids(None, Some(black_id)).await;
+
+        // Black joins WS — was_disconnected should be false for Black
+        // (using the corrected logic: is_user_disconnected(black_id))
+        let was_disconnected = room.is_user_disconnected(black_id).await;
+        assert!(!was_disconnected, "Black should NOT be treated as disconnected — only Red is");
+
+        // Black joins the room
+        let (bc, _) = make_client(black_id, "black");
+        let both = room.join(bc, chess_engine::Color::Black).await.unwrap();
+        // Red slot is empty (removed on disconnect), so both_present is false
+        assert!(!both, "Red slot is empty after disconnect — both_present should be false");
+
+        // Grace period for Red should still be active (Black's join doesn't cancel it)
+        // Actually, join() checks info.color == color — Black joining doesn't match Red's disconnect
+        assert!(room.is_player_disconnected().await, "Red's grace period should still be active");
+    }
+
+    #[tokio::test]
+    async fn test_both_present_true_when_both_players_join() {
+        // When both players join, both_present should be true regardless of join order.
+        // This tests the scenario where the second player's JoinGame is processed
+        // before the first player's (due to WS message ordering).
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        // Black joins FIRST (before Red)
+        let (bc, _) = make_client(black_id, "black");
+        let both = room.join(bc, chess_engine::Color::Black).await.unwrap();
+        assert!(!both, "Only one player — both_present should be false");
+
+        // Red joins SECOND
+        let (rc, _) = make_client(red_id, "red");
+        let both = room.join(rc, chess_engine::Color::Red).await.unwrap();
+        assert!(both, "Both players present — both_present should be true");
+    }
+
+    #[tokio::test]
+    async fn test_opponent_player_id_returns_correct_id_after_both_join() {
+        // After both players join, opponent_player_id should return the correct IDs.
+        let red_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let (room, _) = create_test_room_with_player_ids(red_id, black_id);
+
+        let (rc, _) = make_client(red_id, "red");
+        let (bc, _) = make_client(black_id, "black");
+        room.join(rc, chess_engine::Color::Red).await.unwrap();
+        room.join(bc, chess_engine::Color::Black).await.unwrap();
+
+        // Red's opponent is Black
+        let opp = room.opponent_player_id(chess_engine::Color::Red).await;
+        assert_eq!(opp, Some(black_id));
+
+        // Black's opponent is Red
+        let opp = room.opponent_player_id(chess_engine::Color::Black).await;
+        assert_eq!(opp, Some(red_id));
     }
 }

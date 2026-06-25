@@ -158,6 +158,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 }
                                 if let Some((user_id, username, _)) = &authenticated_user
                                     && let Ok(gid) = Uuid::parse_str(&game_id) {
+                                        tracing::info!("[WS JoinGame] user={} ({}) joining game={}", username, user_id, gid);
                                         if !current_game_ids.contains(&gid) {
                                             current_game_ids.push(gid);
                                         }
@@ -167,21 +168,37 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             // If the room was created before the opponent joined
                                             // via REST, the IDs may be stale — refresh from DB.
                                             let color = match room.player_color_from_db(*user_id).await {
-                                                Ok(c) => c,
+                                                Ok(c) => {
+                                                    tracing::info!("[WS JoinGame] user={} color={:?} (from cached IDs)", username, c);
+                                                    c
+                                                }
                                                 Err(_) => {
                                                     // Room was cached before this player joined via REST.
                                                     // Refresh player IDs from DB and retry.
+                                                    tracing::info!("[WS JoinGame] user={} color lookup failed, refreshing from DB", username);
                                                     if let Ok(Some(game)) = state.game_repo.find_by_id(gid).await {
                                                         room.refresh_player_ids(game.red_player_id, game.black_player_id).await;
+                                                        tracing::info!("[WS JoinGame] refreshed IDs: red={:?} black={:?}", game.red_player_id, game.black_player_id);
                                                     }
                                                     match room.player_color_from_db(*user_id).await {
-                                                        Ok(c) => c,
-                                                        Err(_) => continue, // Not a player in this game
+                                                        Ok(c) => {
+                                                            tracing::info!("[WS JoinGame] user={} color={:?} (after refresh)", username, c);
+                                                            c
+                                                        }
+                                                        Err(e) => {
+                                                            tracing::warn!("[WS JoinGame] user={} still can't determine color after refresh: {}", username, e);
+                                                            continue; // Not a player in this game
+                                                        }
                                                     }
                                                 }
                                             };
                                             let client = crate::websocket::client::Client::new(*user_id, username.clone(), tx.clone());
+                                            // Check if THIS specific player was disconnected (reconnect).
+                                            // Must check the specific user, not just "is anyone disconnected",
+                                            // to avoid misidentifying a first-time join as a reconnect.
+                                            let was_disconnected = room.is_user_disconnected(*user_id).await;
                                             let both_present = room.join(client, color).await.ok().unwrap_or(false);
+                                            tracing::info!("[WS JoinGame] user={} joined: was_disconnected={}, both_present={}", username, was_disconnected, both_present);
 
                                             // Activate time control when both players are present in the
                                             // WS room AND time control is not yet active.
@@ -202,25 +219,72 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                             };
                                             tx.try_send(serde_json::to_string(&joined_msg).unwrap_or_default()).ok();
 
-                                            // Notify opponent
+                                            // Notify players about each other
                                             let opponent_user_id = room.opponent_player_id(color).await;
+                                            tracing::info!("[WS JoinGame] user={} opponent_player_id={:?}", username, opponent_user_id);
                                             if let Some(opp_id) = opponent_user_id {
                                                 // Check if opponent is actually connected in the room
                                                 let opponent_present = room.has_player(opp_id).await;
+                                                tracing::info!("[WS JoinGame] user={} opponent_present={} (opp_id={})", username, opponent_present, opp_id);
                                                 if opponent_present {
-                                                    if both_present {
-                                                        // Second player just joined — notify opponent of new player
-                                                        if let Ok(Some(opp_user)) = state.user_repo.find_by_id(opp_id).await {
-                                                            let opp_info = crate::db::models::UserInfo::from(opp_user);
+                                                    if was_disconnected {
+                                                        // Player was disconnected and just reconnected
+                                                        tracing::info!("[WS JoinGame] user={} → sending OpponentReconnected to opponent", username);
+                                                        let reconnected_msg = ServerMessage::OpponentReconnected {
+                                                            game_id: game_id.clone(),
+                                                        };
+                                                        room.broadcast_to_opponent(color, &reconnected_msg).await;
+
+                                                        // Log reconnect event (fire-and-forget)
+                                                        let game_repo = state.game_repo.clone();
+                                                        let uid = *user_id;
+                                                        let ev_color = match color {
+                                                            chess_engine::Color::Red => "red",
+                                                            chess_engine::Color::Black => "black",
+                                                        };
+                                                        tokio::spawn(async move {
+                                                            if let Err(e) = game_repo.append_event(gid, "reconnect", Some(uid), serde_json::json!({ "color": ev_color })).await {
+                                                                tracing::info!("Failed to append reconnect event for game {}: {}", gid, e);
+                                                            }
+                                                        });
+                                                    } else if both_present {
+                                                        // Both players are now present — notify BOTH players.
+                                                        // This handles the race where Player B's JoinGame is
+                                                        // processed before Player A's: when A later joins,
+                                                        // A also needs to know that B is already here.
+                                                        tracing::info!("[WS JoinGame] user={} → both present, notifying both players", username);
+
+                                                        // 1. Notify the OPPONENT about the joining player
+                                                        if let Ok(Some(joining_user)) = state.user_repo.find_by_id(*user_id).await {
+                                                            let joining_info = crate::db::models::UserInfo::from(joining_user);
                                                             let opp_joined_msg = ServerMessage::OpponentJoined {
                                                                 game_id: game_id.clone(),
-                                                                opponent: opp_info,
+                                                                opponent: joining_info,
                                                                 fen: fen.clone(),
                                                             };
                                                             room.broadcast_to_opponent(color, &opp_joined_msg).await;
                                                         }
+
+                                                        // 2. Notify the JOINING player about the opponent
+                                                        //    (opponent was already in the room waiting)
+                                                        if let Ok(Some(opp_user)) = state.user_repo.find_by_id(opp_id).await {
+                                                            let opp_info = crate::db::models::UserInfo::from(opp_user);
+                                                            let opp_waiting_msg = ServerMessage::OpponentJoined {
+                                                                game_id: game_id.clone(),
+                                                                opponent: opp_info,
+                                                                fen: fen.clone(),
+                                                            };
+                                                            // Send directly to the joining player (not via broadcast_to_opponent
+                                                            // which would send to the opponent instead)
+                                                            let json = serde_json::to_string(&opp_waiting_msg).unwrap_or_default();
+                                                            tx.try_send(json).ok();
+                                                        }
                                                     } else {
-                                                        // Game is already playing — this is a reconnection.
+                                                        // Opponent is present but both_present is false — this means
+                                                        // one player slot is empty (e.g., a third party or the opponent
+                                                        // filled the slot while the other player's slot was vacated).
+                                                        // Treat as reconnection since the game was already in progress.
+                                                        tracing::info!("[WS JoinGame] user={} → fallback: sending OpponentReconnected (opponent present, both_present=false)", username);
                                                         let reconnected_msg = ServerMessage::OpponentReconnected {
                                                             game_id: game_id.clone(),
                                                         };
@@ -239,7 +303,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                             }
                                                         });
                                                     }
+                                                } else {
+                                                    tracing::info!("[WS JoinGame] user={} opponent NOT present (opp_id={}), no notification sent", username, opp_id);
                                                 }
+                                            } else {
+                                                tracing::info!("[WS JoinGame] user={} opponent_player_id is None, no notification sent", username);
                                             }
                                         }
                                     }

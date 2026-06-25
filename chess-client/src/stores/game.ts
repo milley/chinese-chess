@@ -51,7 +51,8 @@ export const useGameStore = defineStore('game', () => {
     const res = await api.createGame(data);
     playerColor.value = res.color as 'red' | 'black';
     await loadGame(res.game_id);
-    wsService.joinGame(res.game_id);
+    // Don't send JoinGame here — GameView.onMounted calls joinWsRoom which does it.
+    // Sending it twice causes duplicate JoinGame messages to the server.
     startLocalTimer();
   }
 
@@ -68,7 +69,8 @@ export const useGameStore = defineStore('game', () => {
       playerColor.value = null;
       isSpectator.value = true;
     }
-    wsService.joinGame(gameId);
+    // Don't send JoinGame here — GameView.onMounted calls joinWsRoom which does it.
+    // Sending it twice causes duplicate JoinGame messages to the server.
     startLocalTimer();
   }
 
@@ -115,7 +117,7 @@ export const useGameStore = defineStore('game', () => {
     await loadGame(gameId);
     playerColor.value = null;
     isSpectator.value = true;
-    wsService.joinGame(gameId);
+    // Don't send JoinGame here — GameView.onMounted calls joinWsRoom which does it.
     startLocalTimer();
   }
 
